@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
 
-# --- STYLE CSS ---
+# --- STYLE CSS (Amélioré pour Mobile) ---
 st.markdown("""
     <style>
     div.stButton > button:first-child {
@@ -22,10 +22,26 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
+    /* Message d'aide pour mobile uniquement */
+    @media (max-width: 768px) {
+        .mobile-hint {
+            display: block !important;
+            background-color: #f0f2f6;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            border-left: 5px solid #28a745;
+        }
+    }
+    .mobile-hint { display: none; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🏡 Haven Radar")
+
+# --- MESSAGE D'AIDE MOBILE ---
+st.markdown('<div class="mobile-hint">⬅️ Cliquez sur la flèche en haut à gauche pour configurer votre recherche.</div>', unsafe_allow_html=True)
 
 # --- BARRE LATÉRALE ---
 with st.sidebar:
@@ -47,7 +63,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             status = st.empty()
             progress = st.progress(0)
 
-            # Étape 1
             status.info("📍 Localisation du secteur...")
             progress.progress(15)
             base = ox.geocode_to_gdf(commune_in)
@@ -57,24 +72,21 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             secteur = secteur[secteur.geometry.area < 200_000_000] 
             union_zone = secteur.geometry.union_all()
             
-            # Étape 2
-            status.info("🛰️ Récupération des bâtiments et routes...")
+            status.info("🛰️ Récupération des données...")
             progress.progress(40)
             bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.008) 
             bat = ox.features_from_polygon(bbox, tags={'building': True})
             tags_routes = ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']
             routes = ox.features_from_polygon(bbox, tags={'highway': tags_routes})
             
-            # Étape 3
-            status.info("📐 Analyse de l'isolement routier...")
+            status.info("📐 Analyse de l'isolement...")
             progress.progress(70)
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
             bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
             candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
             
-            # Étape 4
-            status.info("🧪 Filtrage du voisinage...")
+            status.info("🧪 Filtrage final...")
             progress.progress(90)
             
             if not candidates.empty:
@@ -89,10 +101,9 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 progress.empty()
 
                 if res.empty:
-                    st.warning("⚠️ Aucun refuge trouvé avec ces réglages.")
+                    st.warning("⚠️ Aucun refuge trouvé.")
                 else:
                     st.success(f"✅ {len(res)} Havens détectés !")
-                    
                     m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
                     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
 
@@ -109,33 +120,11 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                         <a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a>
                         </div>"""
                         
-                        # --- MODIFICATION ICI : Pastilles rouges numérotées ---
-                        icon_html = f"""
-                            <div style="
-                                background-color: red;
-                                border: 2px solid white;
-                                border-radius: 50%;
-                                width: 25px;
-                                height: 25px;
-                                color: white;
-                                font-weight: bold;
-                                font-size: 12px;
-                                display: flex;
-                                justify-content: center;
-                                align-items: center;
-                                box-shadow: 0px 0px 5px rgba(0,0,0,0.5);
-                            ">
-                                {i+1}
-                            </div>
-                        """
+                        icon_html = f"""<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;box-shadow:0px 0px 5px rgba(0,0,0,0.5);">{i+1}</div>"""
                         
-                        folium.Marker(
-                            [lat, lon], 
-                            popup=folium.Popup(pop_html, max_width=250),
-                            icon=folium.DivIcon(html=icon_html)
-                        ).add_to(m)
+                        folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
                     
-                    st_folium(m, width="100%", height=600, returned_objects=[])
+                    st_folium(m, width="100%", height=500, returned_objects=[]) # Hauteur réduite pour mobile
                     
                     csv = res[['nb_voisins', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
                     st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
