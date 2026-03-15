@@ -1,0 +1,7 @@
+streamlit
+osmnx
+folium
+streamlit-folium
+pandas
+geopandas
+scikit-learn
