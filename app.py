@@ -30,7 +30,6 @@ st.title("🏡 Haven Radar")
 # --- BARRE LATÉRALE ---
 with st.sidebar:
     st.header("Paramètres du Scan")
-    # On utilise une clé (key) pour stabiliser le champ texte
     commune_in = st.text_input("Secteur :", value="", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
@@ -38,8 +37,7 @@ with st.sidebar:
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
 
-# --- LOGIQUE DE DÉCLENCHEMENT (BOUTON OU ENTREE) ---
-# On déclenche si le bouton est cliqué OU si l'utilisateur valide le texte
+# --- LOGIQUE DE DÉCLENCHEMENT ---
 if lancer_scan or (st.session_state.city_input and st.session_state.get('last_run') != st.session_state.city_input):
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
@@ -111,11 +109,30 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                         <a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a>
                         </div>"""
                         
-                        # Utilisation de marqueurs rouges simples et fiables
+                        # --- MODIFICATION ICI : Pastilles rouges numérotées ---
+                        icon_html = f"""
+                            <div style="
+                                background-color: red;
+                                border: 2px solid white;
+                                border-radius: 50%;
+                                width: 25px;
+                                height: 25px;
+                                color: white;
+                                font-weight: bold;
+                                font-size: 12px;
+                                display: flex;
+                                justify-content: center;
+                                align-items: center;
+                                box-shadow: 0px 0px 5px rgba(0,0,0,0.5);
+                            ">
+                                {i+1}
+                            </div>
+                        """
+                        
                         folium.Marker(
                             [lat, lon], 
                             popup=folium.Popup(pop_html, max_width=250),
-                            icon=folium.Icon(color='red', icon='home', prefix='fa')
+                            icon=folium.DivIcon(html=icon_html)
                         ).add_to(m)
                     
                     st_folium(m, width="100%", height=600, returned_objects=[])
