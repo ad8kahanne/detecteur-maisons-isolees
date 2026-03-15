@@ -31,7 +31,7 @@ st.title("🏡 Haven Radar")
 with st.sidebar:
     st.header("Paramètres du Scan")
     # On utilise une clé (key) pour stabiliser le champ texte
-    commune_in = st.text_input("Secteur:", value="", placeholder="Tapez votre commune ici...", key="city_input")
+    commune_in = st.text_input("Secteur :", value="", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
     voisins_max_val = st.number_input("Voisins Max autorisés :", 0, 12, 2)
