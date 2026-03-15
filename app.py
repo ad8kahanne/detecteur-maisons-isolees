@@ -5,12 +5,13 @@ from streamlit_folium import st_folium
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
+import streamlit.components.v1 as components
 
 # --- CONFIGURATION ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
 
-# --- STYLE CSS (Amélioré pour Mobile) ---
+# --- STYLE CSS & JAVASCRIPT ---
 st.markdown("""
     <style>
     div.stButton > button:first-child {
@@ -22,26 +23,21 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
-    /* Message d'aide pour mobile uniquement */
-    @media (max-width: 768px) {
-        .mobile-hint {
-            display: block !important;
-            background-color: #f0f2f6;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-            font-size: 14px;
-            border-left: 5px solid #28a745;
-        }
+    /* Forcer une ombre sur la barre latérale pour qu'on la voie bien sur mobile */
+    [data-testid="stSidebar"] {
+        box-shadow: 2px 0px 10px rgba(0,0,0,0.2);
     }
-    .mobile-hint { display: none; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🏡 Haven Radar")
+# Javascript pour fermer la sidebar automatiquement au clic sur le bouton
+js_close_sidebar = """
+<script>
+    parent.document.querySelector('button[kind="headerNoPadding"]').click();
+</script>
+"""
 
-# --- MESSAGE D'AIDE MOBILE ---
-st.markdown('<div class="mobile-hint">⬅️ Cliquez sur la flèche en haut à gauche pour configurer votre recherche.</div>', unsafe_allow_html=True)
+st.title("🏡 Haven Radar")
 
 # --- BARRE LATÉRALE ---
 with st.sidebar:
@@ -58,12 +54,15 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
     else:
+        # Fermeture automatique de la sidebar sur mobile au lancement
+        components.html(js_close_sidebar, height=0, width=0)
+        
         try:
             st.session_state['last_run'] = commune_in
             status = st.empty()
             progress = st.progress(0)
 
-            status.info("📍 Localisation du secteur...")
+            status.info("📍 Localisation...")
             progress.progress(15)
             base = ox.geocode_to_gdf(commune_in)
             geom_c = base.geometry.iloc[0]
@@ -72,14 +71,14 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             secteur = secteur[secteur.geometry.area < 200_000_000] 
             union_zone = secteur.geometry.union_all()
             
-            status.info("🛰️ Récupération des données...")
+            status.info("🛰️ Données OSM...")
             progress.progress(40)
             bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.008) 
             bat = ox.features_from_polygon(bbox, tags={'building': True})
             tags_routes = ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']
             routes = ox.features_from_polygon(bbox, tags={'highway': tags_routes})
             
-            status.info("📐 Analyse de l'isolement...")
+            status.info("📐 Analyse isolement...")
             progress.progress(70)
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
@@ -101,7 +100,7 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 progress.empty()
 
                 if res.empty:
-                    st.warning("⚠️ Aucun refuge trouvé.")
+                    st.warning("⚠️ Aucun résultat.")
                 else:
                     st.success(f"✅ {len(res)} Havens détectés !")
                     m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
@@ -114,23 +113,22 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                         u_sv = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
                         
                         pop_html = f"""<div style='font-family:Arial; width:160px;'>
-                        <b>HAVEN #{i+1}</b><br><small>Voisins : {int(row['nb_voisins'])}</small><hr>
-                        <a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Google Maps</a>
+                        <b>HAVEN #{i+1}</b><hr>
+                        <a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a>
                         <a href='{u_waze}' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a>
                         <a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a>
                         </div>"""
                         
-                        icon_html = f"""<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;box-shadow:0px 0px 5px rgba(0,0,0,0.5);">{i+1}</div>"""
-                        
+                        icon_html = f"""<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>"""
                         folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
                     
-                    st_folium(m, width="100%", height=500, returned_objects=[]) # Hauteur réduite pour mobile
+                    st_folium(m, width="100%", height=600, returned_objects=[])
                     
                     csv = res[['nb_voisins', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
                     st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
             else:
                 status.empty()
                 progress.empty()
-                st.warning("⚠️ Zone trop dense.")
+                st.warning("⚠️ Trop dense.")
         except Exception as e:
             st.error(f"❌ Erreur : {str(e)}")
