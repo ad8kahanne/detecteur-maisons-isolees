@@ -13,11 +13,13 @@ st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
-    st.session_state.favs = {} # Format: {index: (lat, lon, label)}
+    st.session_state.favs = {} 
 if 'map_center' not in st.session_state:
     st.session_state.map_center = None
 if 'last_res' not in st.session_state:
     st.session_state.last_res = None
+if 'zoom_level' not in st.session_state:
+    st.session_state.zoom_level = 13
 
 # --- STYLE CSS ---
 st.markdown("""
@@ -30,13 +32,6 @@ st.markdown("""
         border-radius: 5px;
         border: none;
         font-weight: bold;
-    }
-    .stButton > button.fav-btn {
-        background-color: #f0f2f6;
-        color: #31333F;
-        height: 2.5em;
-        margin: 2px;
-        border: 1px solid #dcdfe6;
     }
     .loading-text {
         font-weight: bold;
@@ -60,6 +55,9 @@ with st.sidebar:
     
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
+    if st.button("🗑️ Vider les favoris"):
+        st.session_state.favs = {}
+        st.rerun()
 
 # --- LOGIQUE DE SCAN ---
 if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_in):
@@ -117,6 +115,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                     candidates['taille_hameau'] = adj.sum(axis=1)
                     st.session_state.last_res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
                     st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                    st.session_state.zoom_level = 13
                 
                 status_placeholder.empty()
                 progress_bar.empty()
@@ -128,7 +127,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
 if st.session_state.last_res is not None:
     res = st.session_state.last_res
     
-    # 1. Barre de gestion des favoris
+    # Gestion des favoris
     col_f1, col_f2 = st.columns([3, 1])
     with col_f2:
         to_fav = st.selectbox("Ajouter aux favoris :", range(len(res)), format_func=lambda x: f"Haven #{x+1}")
@@ -137,17 +136,23 @@ if st.session_state.last_res is not None:
             lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
             st.session_state.favs[to_fav+1] = (lat, lon)
 
-    # 2. Liste des favoris (Boutons de centrage)
+    # Liste des favoris
     if st.session_state.favs:
         st.write("📍 **Accès rapide :**")
-        fav_cols = st.columns(10)
-        for i, (num, coords) in enumerate(st.session_state.favs.items()):
-            if fav_cols[i % 10].button(f"#{num}", key=f"btn_fav_{num}"):
+        fav_cols = st.columns(12)
+        for i, (num, coords) in enumerate(sorted(st.session_state.favs.items())):
+            # On ajoute coords[0] (lat) dans la clé pour forcer le refresh si on reclique
+            if fav_cols[i % 12].button(f"#{num}", key=f"fav_{num}_{coords[0]}"):
                 st.session_state.map_center = [coords[0], coords[1]]
+                st.session_state.zoom_level = 18 # Zoom fort pour le favori
                 st.rerun()
 
-    # 3. La Carte
-    m = folium.Map(location=st.session_state.map_center, zoom_start=17 if st.session_state.map_center != [res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()] else 13)
+    # Affichage de la Carte
+    m = folium.Map(
+        location=st.session_state.map_center, 
+        zoom_start=st.session_state.zoom_level,
+        control_scale=True
+    )
     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
 
     for i, (idx, row) in enumerate(res.iterrows()):
@@ -156,7 +161,8 @@ if st.session_state.last_res is not None:
         icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
         folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
     
-    st_folium(m, width="100%", height=600, key="map_haven")
+    # On vide returned_objects pour plus de légèreté
+    st_folium(m, width="100%", height=600, key=f"map_{st.session_state.map_center}", returned_objects=[])
     
     csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
     st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
