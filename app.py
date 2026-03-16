@@ -23,14 +23,12 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
-    /* Forcer une ombre sur la barre latérale pour qu'on la voie bien sur mobile */
     [data-testid="stSidebar"] {
         box-shadow: 2px 0px 10px rgba(0,0,0,0.2);
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Javascript pour fermer la sidebar automatiquement au clic sur le bouton
 js_close_sidebar = """
 <script>
     parent.document.querySelector('button[kind="headerNoPadding"]').click();
@@ -54,7 +52,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
     else:
-        # Fermeture automatique de la sidebar sur mobile au lancement
         components.html(js_close_sidebar, height=0, width=0)
         
         try:
@@ -63,7 +60,7 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             progress = st.progress(0)
 
             status.info("📍 Localisation...")
-            progress.progress(15)
+            progress.progress(10)
             base = ox.geocode_to_gdf(commune_in)
             geom_c = base.geometry.iloc[0]
             voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
@@ -71,22 +68,42 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             secteur = secteur[secteur.geometry.area < 200_000_000] 
             union_zone = secteur.geometry.union_all()
             
-            status.info("🛰️ Données OSM...")
-            progress.progress(40)
-            bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.008) 
+            status.info("🛰️ Récupération des bâtiments et des axes routiers...")
+            progress.progress(30)
+            bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
+            
+            # Récupération bâtiments
             bat = ox.features_from_polygon(bbox, tags={'building': True})
+            
+            # Récupération routes standards
             tags_routes = ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']
             routes = ox.features_from_polygon(bbox, tags={'highway': tags_routes})
             
-            status.info("📐 Analyse isolement...")
-            progress.progress(70)
+            # Récupération spécifique des AUTOROUTES
+            autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
+            
+            status.info("📐 Analyse des distances et exclusion autoroutes...")
+            progress.progress(60)
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
-            bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
-            candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
             
-            status.info("🧪 Filtrage final...")
-            progress.progress(90)
+            # Calcul distance route standard
+            bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
+            
+            # Filtre exclusion autoroute (< 350m)
+            if not autoroutes.empty:
+                autoroutes = autoroutes.to_crs(epsg=2154)
+                bat['d_autoroute'] = bat.geometry.centroid.apply(lambda x: autoroutes.distance(x).min())
+                candidates = bat[
+                    bat.geometry.centroid.within(union_zone) & 
+                    (bat['d_route'] >= dist_route_val) & 
+                    (bat['d_autoroute'] > 350)
+                ].copy()
+            else:
+                candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
+            
+            status.info("🧪 Filtrage du voisinage...")
+            progress.progress(85)
             
             if not candidates.empty:
                 coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
@@ -100,9 +117,9 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 progress.empty()
 
                 if res.empty:
-                    st.warning("⚠️ Aucun résultat.")
+                    st.warning("⚠️ Aucun résultat ne respecte les critères (trop proche d'une autoroute ou trop de voisins).")
                 else:
-                    st.success(f"✅ {len(res)} Havens détectés !")
+                    st.success(f"✅ {len(res)} Havens détectés (Hors zone autoroute) !")
                     m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
                     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
 
@@ -129,6 +146,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             else:
                 status.empty()
                 progress.empty()
-                st.warning("⚠️ Trop dense.")
+                st.warning("⚠️ Trop dense ou trop proche d'axes majeurs.")
         except Exception as e:
             st.error(f"❌ Erreur : {str(e)}")
