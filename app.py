@@ -56,7 +56,7 @@ with st.sidebar:
         
         col_sel, col_add = st.columns([2, 1])
         with col_sel:
-            # On s'assure que l'index ne dépasse pas si on change de ville
+            # Correction de l'index pour éviter les dépassements
             current_idx = min(st.session_state.selected_haven_idx, res_count - 1)
             st.session_state.selected_haven_idx = st.selectbox(
                 "Choisir #", 
@@ -64,7 +64,7 @@ with st.sidebar:
                 index=current_idx,
                 format_func=lambda x: f"Haven #{x+1}", 
                 label_visibility="collapsed",
-                key="haven_selector"
+                key="haven_selector_v2" # Nouvelle clé pour réinitialiser le widget
             )
         with col_add:
             if st.button("Ajouter"):
@@ -96,7 +96,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
             with st.container():
                 status_msg = st.empty()
                 progress_bar = st.progress(0)
-                status_msg.markdown('<p class="loading-text">🔍 Géocodage... 15%</p>', unsafe_allow_html=True)
+                status_msg.markdown('<p class="loading-text">🔍 Scan en cours... 15%</p>', unsafe_allow_html=True)
                 progress_bar.progress(15)
                 base = ox.geocode_to_gdf(commune_in)
                 
@@ -106,7 +106,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
                 union_zone = secteur.geometry.union_all()
                 
-                status_msg.markdown('<p class="loading-text">🏗️ Récupération data... 70%</p>', unsafe_allow_html=True)
+                status_msg.markdown('<p class="loading-text">🏗️ Analyse des bâtiments... 70%</p>', unsafe_allow_html=True)
                 progress_bar.progress(70)
                 bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
@@ -152,24 +152,25 @@ if st.session_state.last_res is not None:
                 <a href='https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}' target='_blank'>🏙️ Street View</a>
             </div>
             """
-            icon_html = f'<div style="background-color:red;border:1px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
+            icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_html)).add_to(m)
         
-        # LOGIQUE DE CAPTURE CORRIGÉE
-        map_data = st_folium(m, width="100%", height=700, key=f"map_{st.session_state.map_center}", returned_objects=["last_object_clicked"])
+        # --- LOGIQUE DE CAPTURE CRITIQUE ---
+        # On utilise une clé fixe pour la carte afin de ne pas la recharger inutilement, 
+        # mais on écoute activement le 'last_object_clicked'
+        map_data = st_folium(m, width="100%", height=700, key="main_map", returned_objects=["last_object_clicked"])
         
         if map_data and map_data.get("last_object_clicked"):
             c_lat = map_data["last_object_clicked"]["lat"]
             c_lon = map_data["last_object_clicked"]["lng"]
             
-            # Calcul de la distance pour trouver le bon Haven
+            # On cherche le Haven le plus proche du clic
             dists = res.geometry.centroid.apply(lambda p: ((p.y - c_lat)**2 + (p.x - c_lon)**2)**0.5)
             new_idx = res.index.get_loc(dists.idxmin())
             
-            # Si l'index a changé, on met à jour et on FORCE le re-run immédiat
             if st.session_state.selected_haven_idx != new_idx:
                 st.session_state.selected_haven_idx = new_idx
-                st.rerun() # <-- Indispensable pour que la Sidebar s'actualise AVANT le clic "Ajouter"
+                st.rerun() # Recharger pour mettre à jour la Sidebar AVANT l'ajout
         
         csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
         st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
