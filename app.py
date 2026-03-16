@@ -11,7 +11,15 @@ import streamlit.components.v1 as components
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
 
-# --- STYLE CSS & JAVASCRIPT ---
+# --- INITIALISATION ÉTATS ---
+if 'favs' not in st.session_state:
+    st.session_state.favs = {} # Format: {index: (lat, lon, label)}
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = None
+if 'last_res' not in st.session_state:
+    st.session_state.last_res = None
+
+# --- STYLE CSS ---
 st.markdown("""
     <style>
     div.stButton > button:first-child {
@@ -22,6 +30,13 @@ st.markdown("""
         border-radius: 5px;
         border: none;
         font-weight: bold;
+    }
+    .stButton > button.fav-btn {
+        background-color: #f0f2f6;
+        color: #31333F;
+        height: 2.5em;
+        margin: 2px;
+        border: 1px solid #dcdfe6;
     }
     .loading-text {
         font-weight: bold;
@@ -38,7 +53,6 @@ st.title("🏡 Haven Radar")
 # --- BARRE LATÉRALE ---
 with st.sidebar:
     st.header("Paramètres du Scan")
-    # Ajout de la détection automatique au changement (touche Entrée)
     commune_in = st.text_input("Secteur :", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
@@ -47,17 +61,14 @@ with st.sidebar:
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
 
-# --- LOGIQUE DE DÉCLENCHEMENT (Simplifiée pour marcher avec Entrée) ---
+# --- LOGIQUE DE SCAN ---
 if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_in):
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
     else:
         components.html(js_close_sidebar, height=0, width=0)
-        
         try:
-            # Mémorisation de la ville pour éviter la boucle infinie
             st.session_state['last_city'] = commune_in
-            
             loading_container = st.container()
             with loading_container:
                 status_placeholder = st.empty()
@@ -78,10 +89,8 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
-                try:
-                    autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
-                except:
-                    autoroutes = pd.DataFrame()
+                try: autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
+                except: autoroutes = pd.DataFrame()
                 
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 70%</p>', unsafe_allow_html=True)
                 progress_bar.progress(70)
@@ -106,33 +115,48 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                     adj = nn.radius_neighbors_graph(coords_candidates).toarray()
                     
                     candidates['taille_hameau'] = adj.sum(axis=1)
-                    res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
-                    
-                    status_placeholder.empty()
-                    progress_bar.empty()
-                    loading_container.empty()
-
-                    if res.empty:
-                        st.warning("⚠️ Aucun résultat trouvé.")
-                    else:
-                        st.success(f"✅ {len(res)} Havens détectés !")
-                        m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
-                        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
-
-                        for i, (idx, row) in enumerate(res.iterrows()):
-                            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
-                            u_google = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                            u_waze = f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
-                            u_sv = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
-                            pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><br><small>Hameau de {int(row['taille_hameau'])} bât.</small><hr><a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='{u_waze}' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a><a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a></div>"
-                            icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
-                            folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
-                        
-                        st_folium(m, width="100%", height=600, returned_objects=[])
-                        csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
-                        st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
-                else:
-                    loading_container.empty()
-                    st.warning("⚠️ Aucun bâtiment ne correspond aux critères.")
+                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
+                    st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                
+                status_placeholder.empty()
+                progress_bar.empty()
+                loading_container.empty()
         except Exception as e:
             st.error(f"❌ Erreur : {str(e)}")
+
+# --- AFFICHAGE CARTE ET FAVORIS ---
+if st.session_state.last_res is not None:
+    res = st.session_state.last_res
+    
+    # 1. Barre de gestion des favoris
+    col_f1, col_f2 = st.columns([3, 1])
+    with col_f2:
+        to_fav = st.selectbox("Ajouter aux favoris :", range(len(res)), format_func=lambda x: f"Haven #{x+1}")
+        if st.button("⭐ Ajouter"):
+            row = res.iloc[to_fav]
+            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+            st.session_state.favs[to_fav+1] = (lat, lon)
+
+    # 2. Liste des favoris (Boutons de centrage)
+    if st.session_state.favs:
+        st.write("📍 **Accès rapide :**")
+        fav_cols = st.columns(10)
+        for i, (num, coords) in enumerate(st.session_state.favs.items()):
+            if fav_cols[i % 10].button(f"#{num}", key=f"btn_fav_{num}"):
+                st.session_state.map_center = [coords[0], coords[1]]
+                st.rerun()
+
+    # 3. La Carte
+    m = folium.Map(location=st.session_state.map_center, zoom_start=17 if st.session_state.map_center != [res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()] else 13)
+    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
+
+    for i, (idx, row) in enumerate(res.iterrows()):
+        lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+        pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><br><small>Hameau de {int(row['taille_hameau'])} bât.</small><hr><a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a></div>"
+        icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
+        folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
+    
+    st_folium(m, width="100%", height=600, key="map_haven")
+    
+    csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
+    st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
