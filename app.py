@@ -54,15 +54,17 @@ with st.sidebar:
     if st.session_state.last_res is not None:
         res_count = len(st.session_state.last_res)
         
-        # Le selectbox utilise maintenant selected_haven_idx
         col_sel, col_add = st.columns([2, 1])
         with col_sel:
+            # On s'assure que l'index ne dépasse pas si on change de ville
+            current_idx = min(st.session_state.selected_haven_idx, res_count - 1)
             st.session_state.selected_haven_idx = st.selectbox(
                 "Choisir #", 
                 range(res_count), 
-                index=st.session_state.selected_haven_idx,
+                index=current_idx,
                 format_func=lambda x: f"Haven #{x+1}", 
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                key="haven_selector"
             )
         with col_add:
             if st.button("Ajouter"):
@@ -76,7 +78,6 @@ with st.sidebar:
             if cols_fav[i % 4].button(f"#{num}", key=f"fbtn_{num}_{coords[0]}"):
                 st.session_state.map_center = [coords[0], coords[1]]
                 st.session_state.zoom_level = 18
-                # On synchronise aussi la liste déroulante quand on clique sur le favori
                 st.session_state.selected_haven_idx = num - 1
                 st.rerun()
         
@@ -151,22 +152,24 @@ if st.session_state.last_res is not None:
                 <a href='https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}' target='_blank'>🏙️ Street View</a>
             </div>
             """
-            icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
+            icon_html = f'<div style="background-color:red;border:1px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_html)).add_to(m)
         
-        # On récupère les données de la carte pour détecter l'interaction
+        # LOGIQUE DE CAPTURE CORRIGÉE
         map_data = st_folium(m, width="100%", height=700, key=f"map_{st.session_state.map_center}", returned_objects=["last_object_clicked"])
         
-        # MISE À JOUR AUTOMATIQUE : Si on clique sur une pastille, on met à jour l'index sélectionné
         if map_data and map_data.get("last_object_clicked"):
-            click_lat = map_data["last_object_clicked"]["lat"]
-            click_lon = map_data["last_object_clicked"]["lng"]
-            # Trouver l'index du haven le plus proche des coordonnées cliquées
-            dists = res.geometry.centroid.apply(lambda p: ((p.y - click_lat)**2 + (p.x - click_lon)**2)**0.5)
-            nearest_idx = dists.idxmin()
-            # On retrouve la position dans l'ordre d'affichage (i+1)
-            st.session_state.selected_haven_idx = res.index.get_loc(nearest_idx)
-            # Pas de st.rerun ici pour éviter de fermer la popup immédiatement
+            c_lat = map_data["last_object_clicked"]["lat"]
+            c_lon = map_data["last_object_clicked"]["lng"]
+            
+            # Calcul de la distance pour trouver le bon Haven
+            dists = res.geometry.centroid.apply(lambda p: ((p.y - c_lat)**2 + (p.x - c_lon)**2)**0.5)
+            new_idx = res.index.get_loc(dists.idxmin())
+            
+            # Si l'index a changé, on met à jour et on FORCE le re-run immédiat
+            if st.session_state.selected_haven_idx != new_idx:
+                st.session_state.selected_haven_idx = new_idx
+                st.rerun() # <-- Indispensable pour que la Sidebar s'actualise AVANT le clic "Ajouter"
         
         csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
         st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
