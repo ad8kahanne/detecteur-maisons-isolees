@@ -20,6 +20,8 @@ if 'last_res' not in st.session_state:
     st.session_state.last_res = None
 if 'zoom_level' not in st.session_state:
     st.session_state.zoom_level = 13
+if 'selected_haven_idx' not in st.session_state:
+    st.session_state.selected_haven_idx = 0
 
 # --- STYLE CSS ---
 st.markdown("""
@@ -48,17 +50,24 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # --- BLOC FAVORIS RÉINTÉGRÉ ---
     st.subheader("⭐ Gestion Favoris")
     if st.session_state.last_res is not None:
         res_count = len(st.session_state.last_res)
+        
+        # Le selectbox utilise maintenant selected_haven_idx
         col_sel, col_add = st.columns([2, 1])
         with col_sel:
-            to_fav_idx = st.selectbox("Choisir #", range(res_count), format_func=lambda x: f"Haven #{x+1}", label_visibility="collapsed")
+            st.session_state.selected_haven_idx = st.selectbox(
+                "Choisir #", 
+                range(res_count), 
+                index=st.session_state.selected_haven_idx,
+                format_func=lambda x: f"Haven #{x+1}", 
+                label_visibility="collapsed"
+            )
         with col_add:
             if st.button("Ajouter"):
-                row = st.session_state.last_res.iloc[to_fav_idx]
-                st.session_state.favs[to_fav_idx+1] = (row.geometry.centroid.y, row.geometry.centroid.x)
+                row = st.session_state.last_res.iloc[st.session_state.selected_haven_idx]
+                st.session_state.favs[st.session_state.selected_haven_idx + 1] = (row.geometry.centroid.y, row.geometry.centroid.x)
     
     if st.session_state.favs:
         st.write("📍 Accès rapide :")
@@ -67,13 +76,15 @@ with st.sidebar:
             if cols_fav[i % 4].button(f"#{num}", key=f"fbtn_{num}_{coords[0]}"):
                 st.session_state.map_center = [coords[0], coords[1]]
                 st.session_state.zoom_level = 18
+                # On synchronise aussi la liste déroulante quand on clique sur le favori
+                st.session_state.selected_haven_idx = num - 1
                 st.rerun()
         
         if st.button("Vider les favoris", use_container_width=True):
             st.session_state.favs = {}
             st.rerun()
 
-# --- LOGIQUE DE SCAN AVEC RETOUR DES INDICATEURS ---
+# --- LOGIQUE DE SCAN ---
 if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_in):
     if not commune_in:
         st.error("⚠️ Entrez une commune.")
@@ -81,24 +92,20 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
         components.html(js_close_sidebar, height=0, width=0)
         try:
             st.session_state['last_city'] = commune_in
-            
-            # Retour de la barre de progression détaillée
             with st.container():
                 status_msg = st.empty()
                 progress_bar = st.progress(0)
-                
-                status_msg.markdown('<p class="loading-text">🔍 Géocodage de la zone... 15%</p>', unsafe_allow_html=True)
+                status_msg.markdown('<p class="loading-text">🔍 Géocodage... 15%</p>', unsafe_allow_html=True)
                 progress_bar.progress(15)
                 base = ox.geocode_to_gdf(commune_in)
                 
-                status_msg.markdown('<p class="loading-text">🛰️ Analyse des limites communales... 40%</p>', unsafe_allow_html=True)
                 progress_bar.progress(40)
                 geom_c = base.geometry.iloc[0]
                 voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
                 union_zone = secteur.geometry.union_all()
                 
-                status_msg.markdown('<p class="loading-text">🏗️ Récupération des bâtiments et axes... 70%</p>', unsafe_allow_html=True)
+                status_msg.markdown('<p class="loading-text">🏗️ Récupération data... 70%</p>', unsafe_allow_html=True)
                 progress_bar.progress(70)
                 bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
@@ -109,9 +116,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                 bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
                 candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
                 
-                status_msg.markdown('<p class="loading-text">🧬 Calcul de l\'isolement... 90%</p>', unsafe_allow_html=True)
                 progress_bar.progress(90)
-                
                 if not candidates.empty:
                     coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
                     coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
@@ -130,10 +135,7 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
 # --- AFFICHAGE RESULTATS ET CARTE ---
 if st.session_state.last_res is not None:
     res = st.session_state.last_res
-    if res.empty:
-        st.warning("⚠️ Aucun bâtiment ne correspond aux critères.")
-    else:
-        # Retour du message de succès avec le compte
+    if not res.empty:
         st.success(f"✅ {len(res)} Havens détectés !")
         
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level)
@@ -143,17 +145,28 @@ if st.session_state.last_res is not None:
             lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
             pop_html = f"""
             <div style='font-family:Arial; width:170px;'>
-                <b>HAVEN #{i+1}</b><br>
-                <small>Hameau de {int(row['taille_hameau'])} bât.</small><hr>
-                <a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank' style='color:#4285F4;text-decoration:none;'>🗺️ Google Maps</a><br>
-                <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank' style='color:#33CCFF;text-decoration:none;'>🚙 Waze</a><br>
-                <a href='https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}' target='_blank' style='color:#EA4335;text-decoration:none;'>🏙️ Street View</a>
+                <b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
+                <a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
+                <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a><br>
+                <a href='https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}' target='_blank'>🏙️ Street View</a>
             </div>
             """
-            icon_html = f'<div style="background-color:red;border:1px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
+            icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:22px;height:22px;color:white;font-weight:bold;font-size:10px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_html)).add_to(m)
         
-        st_folium(m, width="100%", height=700, key=f"map_{st.session_state.map_center}", returned_objects=[])
+        # On récupère les données de la carte pour détecter l'interaction
+        map_data = st_folium(m, width="100%", height=700, key=f"map_{st.session_state.map_center}", returned_objects=["last_object_clicked"])
+        
+        # MISE À JOUR AUTOMATIQUE : Si on clique sur une pastille, on met à jour l'index sélectionné
+        if map_data and map_data.get("last_object_clicked"):
+            click_lat = map_data["last_object_clicked"]["lat"]
+            click_lon = map_data["last_object_clicked"]["lng"]
+            # Trouver l'index du haven le plus proche des coordonnées cliquées
+            dists = res.geometry.centroid.apply(lambda p: ((p.y - click_lat)**2 + (p.x - click_lon)**2)**0.5)
+            nearest_idx = dists.idxmin()
+            # On retrouve la position dans l'ordre d'affichage (i+1)
+            st.session_state.selected_haven_idx = res.index.get_loc(nearest_idx)
+            # Pas de st.rerun ici pour éviter de fermer la popup immédiatement
         
         csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
-        st.download_button("📥 Télécharger les résultats (CSV)", csv, "haven_radar.csv", "text/csv")
+        st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
