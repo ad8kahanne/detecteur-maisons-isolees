@@ -79,19 +79,21 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
             tags_routes = ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']
             routes = ox.features_from_polygon(bbox, tags={'highway': tags_routes})
             
-            # Récupération spécifique des AUTOROUTES
-            autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
+            # Récupération sécurisée des AUTOROUTES
+            try:
+                autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
+            except:
+                autoroutes = pd.DataFrame() # On crée un dataframe vide si aucune autoroute n'existe
             
             status.info("📐 Analyse des distances et exclusion autoroutes...")
             progress.progress(60)
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
             
-            # Calcul distance route standard
             bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
             
-            # Filtre exclusion autoroute (< 350m)
-            if not autoroutes.empty:
+            # Application du filtre autoroute uniquement si des autoroutes sont trouvées
+            if not autoroutes.empty and 'geometry' in autoroutes.columns:
                 autoroutes = autoroutes.to_crs(epsg=2154)
                 bat['d_autoroute'] = bat.geometry.centroid.apply(lambda x: autoroutes.distance(x).min())
                 candidates = bat[
@@ -117,9 +119,9 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 progress.empty()
 
                 if res.empty:
-                    st.warning("⚠️ Aucun résultat ne respecte les critères (trop proche d'une autoroute ou trop de voisins).")
+                    st.warning("⚠️ Aucun résultat ne respecte les critères.")
                 else:
-                    st.success(f"✅ {len(res)} Havens détectés (Hors zone autoroute) !")
+                    st.success(f"✅ {len(res)} Havens détectés !")
                     m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
                     folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
 
