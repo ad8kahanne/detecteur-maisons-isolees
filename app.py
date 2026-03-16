@@ -78,9 +78,10 @@ with st.sidebar:
             st.rerun()
 
 # --- LOGIQUE DE SCAN ---
-# Détection de changement de commune pour vider les favoris
+# Vidage automatique si nouvelle commune
 if commune_in and commune_in != st.session_state.last_city:
-    st.session_state.favs = {} # Reset des favoris si la ville change
+    st.session_state.favs = {}
+    st.session_state.last_res = None
 
 if lancer_scan or (commune_in and st.session_state.last_city != commune_in):
     if not commune_in:
@@ -91,29 +92,66 @@ if lancer_scan or (commune_in and st.session_state.last_city != commune_in):
             st.session_state.last_city = commune_in
             p_bar = st.progress(0, text="0%")
             
-            # 25%
             base = ox.geocode_to_gdf(commune_in)
-            p_bar.progress(25, text="25%")
+            p_bar.progress(20, text="20%")
             
-            # 50%
             geom_c = base.geometry.iloc[0]
             voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
             secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
             union_zone = secteur.geometry.union_all()
-            p_bar.progress(50, text="50%")
+            p_bar.progress(40, text="40%")
             
-            # 75%
             bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
             bat = ox.features_from_polygon(bbox, tags={'building': True})
             routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
-            p_bar.progress(75, text="75%")
+            p_bar.progress(60, text="60%")
             
-            # Finalisation
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
             bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
             candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
+            p_bar.progress(80, text="80%")
             
             if not candidates.empty:
                 coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
-                coords_candidates =
+                coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
+                nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
+                adj = nn.radius_neighbors_graph(coords_candidates).toarray()
+                candidates['taille_hameau'] = adj.sum(axis=1)
+                st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+            
+            p_bar.progress(100, text="100%")
+            p_bar.empty()
+        except Exception as e:
+            st.error(f"❌ Erreur : {str(e)}")
+
+# --- AFFICHAGE RESULTATS ET CARTE ---
+if st.session_state.last_res is not None:
+    res = st.session_state.last_res
+    if not res.empty:
+        st.success(f"✅ {len(res)} Havens détectés !")
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
+
+        for i, (idx, row) in enumerate(res.iterrows()):
+            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+            pop_html = f"""<div style='font-family:Arial; width:170px;'><b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
+            <a href='http://maps.google.com/maps?q={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
+            <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a></div>"""
+            
+            icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
+            folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_c)).add_to(m)
+        
+        map_data = st_folium(m, width="100%", height=700, key="main_map", returned_objects=["last_object_clicked"])
+        
+        if map_data and map_data.get("last_object_clicked"):
+            c_lat, c_lon = map_data["last_object_clicked"]["lat"], map_data["last_object_clicked"]["lng"]
+            dists = res.geometry.centroid.apply(lambda p: ((p.y - c_lat)**2 + (p.x - c_lon)**2)**0.5)
+            new_idx = res.index.get_loc(dists.idxmin())
+            if st.session_state.sync_idx != new_idx:
+                st.session_state.sync_idx = new_idx
+                st.rerun()
+
+        csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
+        st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
