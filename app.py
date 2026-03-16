@@ -5,38 +5,33 @@ from streamlit_folium import st_folium
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
-import streamlit.components.v1 as components
 
 # --- CONFIGURATION ---
 warnings.filterwarnings("ignore")
-st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
+st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
-# --- INITIALISATION MÉMOIRE ---
+# --- MÉMOIRE ---
 if 'hidden_havens' not in st.session_state:
     st.session_state.hidden_havens = set()
 if 'scan_results' not in st.session_state:
     st.session_state.scan_results = None
 
-# --- STYLE CSS ---
+# --- STYLE ---
 st.markdown("""
     <style>
-    div.stButton > button:first-child {
-        background-color: #28a745; color: white; height: 3em; width: 100%;
-        border-radius: 5px; border: none; font-weight: bold;
+    div.stButton > button:first-child { background-color: #28a745; color: white; font-weight: bold; width: 100%; }
+    .btn-action { 
+        display: block; padding: 6px; margin-top: 5px; text-align: center;
+        border-radius: 4px; text-decoration: none; font-size: 11px; font-weight: bold;
     }
-    .loading-text { font-weight: bold; font-size: 18px; margin-bottom: 10px; }
-    .btn-mask { 
-        display: inline-block; padding: 5px 10px; background-color: #f0f2f6; 
-        color: #31333F; text-decoration: none; border-radius: 5px; 
-        font-size: 11px; font-weight: bold; border: 1px solid #d1d5db;
-        margin-top: 10px; cursor: pointer;
-    }
+    .btn-griser { background-color: #e0e0e0; color: #333; border: 1px solid #ccc; }
+    .btn-retablir { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🏡 Haven Radar")
 
-# --- BARRE LATÉRALE ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Paramètres")
     commune_in = st.text_input("Secteur :", key="city_input")
@@ -44,37 +39,16 @@ with st.sidebar:
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
     voisins_max_val = st.number_input("Voisins Max :", 0, 12, 2)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        lancer_scan = st.button("Lancer le Scan")
-    with col2:
-        if st.button("🔄 Reset Tri"):
-            st.session_state.hidden_havens = set()
-            st.rerun()
-
-# --- LOGIQUE DE SCAN ---
-if lancer_scan:
-    if not commune_in:
-        st.error("⚠️ Entrez une commune.")
-    else:
+    if st.button("Lancer le Scan"):
         try:
-            loading = st.container()
-            with loading:
-                p_bar = st.progress(0)
-                st.markdown('<p class="loading-text">🔍 Scan en cours... 40%</p>', unsafe_allow_html=True)
-                p_bar.progress(40)
-                
+            with st.spinner("Analyse en cours..."):
                 base = ox.geocode_to_gdf(commune_in)
-                geom_c = base.geometry.iloc[0]
                 bbox = base.to_crs(epsg=4326).geometry.union_all().buffer(0.01)
-                
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 try: auto = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
                 except: auto = pd.DataFrame()
 
-                st.markdown('<p class="loading-text">🔍 Scan en cours... 80%</p>', unsafe_allow_html=True)
-                p_bar.progress(80)
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
                 bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
@@ -86,56 +60,54 @@ if lancer_scan:
                 else:
                     cand = bat[bat['d_route'] >= dist_route_val].copy()
 
-                if not cand.empty:
-                    nn = NearestNeighbors(radius=rayon_iso_val).fit(list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y)))
-                    adj = nn.radius_neighbors_graph(list(zip(cand.geometry.centroid.x, cand.geometry.centroid.y))).toarray()
-                    cand['nb_voisins'] = adj.sum(axis=1) - 1
-                    st.session_state.scan_results = cand[cand['nb_voisins'] <= voisins_max_val].copy().to_crs(epsg=4326)
-                else:
-                    st.session_state.scan_results = pd.DataFrame()
-                loading.empty()
+                nn = NearestNeighbors(radius=rayon_iso_val).fit(list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y)))
+                adj = nn.radius_neighbors_graph(list(zip(cand.geometry.centroid.x, cand.geometry.centroid.y))).toarray()
+                cand['nb_voisins'] = adj.sum(axis=1) - 1
+                st.session_state.scan_results = cand[cand['nb_voisins'] <= voisins_max_val].copy().to_crs(epsg=4326)
         except Exception as e:
-            st.error(f"❌ Erreur : {e}")
+            st.error(f"Erreur : {e}")
 
-# --- AFFICHAGE ---
+# --- AFFICHAGE CARTE ---
 if st.session_state.scan_results is not None:
     df = st.session_state.scan_results
-    if df.empty:
-        st.warning("⚠️ Aucun résultat.")
-    else:
-        st.success(f"✅ {len(df)} Havens détectés")
-        m = folium.Map(location=[df.geometry.centroid.y.mean(), df.geometry.centroid.x.mean()], zoom_start=13)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
+    m = folium.Map(location=[df.geometry.centroid.y.mean(), df.geometry.centroid.x.mean()], zoom_start=13)
+    folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
 
-        for i, (idx, row) in enumerate(df.iterrows()):
-            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
-            is_hidden = str(idx) in st.session_state.hidden_havens
-            color = "#A0A0A0" if is_hidden else "#FF0000"
-            
-            pop_content = f"""
-            <div style='font-family:Arial; width:150px;'>
-                <b>HAVEN #{i+1}</b><hr>
-                <a href='http://maps.google.com/?q={lat},{lon}' target='_blank' style='color:#4285F4;display:block;margin:5px 0;'>🗺️ Google Maps</a>
-                <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank' style='color:#33CCFF;display:block;margin:5px 0;'>🚙 Waze</a>
-                <div style='text-align:center;'>
-                    <p style='display:none;'>ID:{idx}</p>
-                    <span style='color:gray; font-size:9px;'>Cliquer sur la pastille pour griser</span>
-                </div>
+    for idx, row in df.iterrows():
+        lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+        id_str = str(idx)
+        is_hidden = id_str in st.session_state.hidden_havens
+        color = "#808080" if is_hidden else "#FF0000"
+        
+        # Popup avec les nouveaux boutons
+        pop_html = f"""
+        <div style='font-family:Arial; width:140px; line-height:1.5;'>
+            <b>HAVEN</b><hr style='margin:5px 0;'>
+            <a href='https://www.google.com/maps?q={lat},{lon}' target='_blank' style='color:#4285F4; text-decoration:none;'>🗺️ Google Maps</a><br>
+            <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank' style='color:#33CCFF; text-decoration:none;'>🚙 Waze</a>
+            <div style='margin-top:10px; border-top: 1px solid #eee; padding-top:5px;'>
+                <p style='display:none;'>ID:{id_str}</p>
+                <a href='#' class='btn-action btn-griser'>🔘 Griser</a>
+                <a href='#' class='btn-action btn-retablir'>🔄 Rétablir</a>
             </div>
-            """
-            
-            icon_html = f'''<div style="background-color:{color}; border:2px solid white; border-radius:50%; width:24px; height:24px; color:white; font-weight:bold; font-size:11px; display:flex; justify-content:center; align-items:center; box-shadow:0 2px 4px rgba(0,0,0,0.3);">{i+1}</div>'''
-            
-            folium.Marker([lat, lon], popup=folium.Popup(pop_content, max_width=200), icon=folium.DivIcon(html=icon_html)).add_to(m)
+        </div>
+        """
         
-        # Interaction
-        map_data = st_folium(m, width="100%", height=600, key="map_haven")
-        
-        # Détection du clic pour griser
-        if map_data and map_data.get("last_object_clicked_popup"):
-            try:
-                raw_id = map_data["last_object_clicked_popup"].split("ID:")[1].split("</p>")[0]
-                if raw_id not in st.session_state.hidden_havens:
-                    st.session_state.hidden_havens.add(raw_id)
-                    st.rerun()
-            except: pass
+        icon_html = f'''<div style="background-color:{color}; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center; box-shadow:0 2px 4px rgba(0,0,0,0.3);">{idx % 100}</div>'''
+        folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_html)).add_to(m)
+
+    # Affichage stable
+    map_data = st_folium(m, width="100%", height=600, key="stable_map")
+
+    # Logique de clic sur bouton (via détection de popup)
+    if map_data and map_data.get("last_object_clicked_popup"):
+        clicked_text = map_data["last_object_clicked_popup"]
+        try:
+            target_id = clicked_text.split("ID:")[1].split("</p>")[0]
+            if "btn-griser" in clicked_text and target_id not in st.session_state.hidden_havens:
+                st.session_state.hidden_havens.add(target_id)
+                st.rerun()
+            elif "btn-retablir" in clicked_text and target_id in st.session_state.hidden_havens:
+                st.session_state.hidden_havens.remove(target_id)
+                st.rerun()
+        except: pass
