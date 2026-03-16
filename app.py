@@ -23,9 +23,6 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
-    [data-testid="stSidebar"] {
-        box-shadow: 2px 0px 10px rgba(0,0,0,0.2);
-    }
     .loading-text {
         font-weight: bold;
         font-size: 18px;
@@ -34,36 +31,33 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-js_close_sidebar = """
-<script>
-    parent.document.querySelector('button[kind="headerNoPadding"]').click();
-</script>
-"""
+js_close_sidebar = "<script>parent.document.querySelector('button[kind=\"headerNoPadding\"]').click();</script>"
 
 st.title("🏡 Haven Radar")
 
 # --- BARRE LATÉRALE ---
 with st.sidebar:
     st.header("Paramètres du Scan")
-    commune_in = st.text_input("Secteur :", value="", placeholder="Tapez votre commune ici...", key="city_input")
+    # Ajout de la détection automatique au changement (touche Entrée)
+    commune_in = st.text_input("Secteur :", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
-    
-    # MODIFICATION : On demande la taille totale du hameau (minimum 1)
     taille_hameau_max = st.number_input("Nombre de bâtiments du hameau :", 1, 13, 3)
     
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
 
-# --- LOGIQUE DE DÉCLENCHEMENT ---
-if lancer_scan or (st.session_state.city_input and st.session_state.get('last_run') != st.session_state.city_input):
+# --- LOGIQUE DE DÉCLENCHEMENT (Simplifiée pour marcher avec Entrée) ---
+if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_in):
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
     else:
         components.html(js_close_sidebar, height=0, width=0)
         
         try:
-            st.session_state['last_run'] = commune_in
+            # Mémorisation de la ville pour éviter la boucle infinie
+            st.session_state['last_city'] = commune_in
+            
             loading_container = st.container()
             with loading_container:
                 status_placeholder = st.empty()
@@ -82,8 +76,7 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 progress_bar.progress(40)
                 bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
-                tags_routes = ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']
-                routes = ox.features_from_polygon(bbox, tags={'highway': tags_routes})
+                routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
                 try:
                     autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
@@ -98,8 +91,8 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 
                 if not autoroutes.empty and 'geometry' in autoroutes.columns:
                     autoroutes = autoroutes.to_crs(epsg=2154)
-                    bat['d_autoroute'] = bat.geometry.centroid.apply(lambda x: autoroutes.distance(x).min())
-                    candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val) & (bat['d_autoroute'] > 350)].copy()
+                    bat['d_auto'] = bat.geometry.centroid.apply(lambda x: autoroutes.distance(x).min())
+                    candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val) & (bat['d_auto'] > 350)].copy()
                 else:
                     candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
                 
@@ -112,7 +105,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                     nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
                     adj = nn.radius_neighbors_graph(coords_candidates).toarray()
                     
-                    # LOGIQUE CORRIGÉE : nb_voisins + 1 = Taille totale du hameau
                     candidates['taille_hameau'] = adj.sum(axis=1)
                     res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
                     
