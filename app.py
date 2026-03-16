@@ -11,23 +11,20 @@ import streamlit.components.v1 as components
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR | Détecteur", layout="wide")
 
-# --- STYLE CSS & JAVASCRIPT ---
+# --- INITIALISATION DE LA MÉMOIRE (Indispensable pour ne pas bugger) ---
+if 'hidden_havens' not in st.session_state:
+    st.session_state.hidden_havens = set()
+if 'last_results' not in st.session_state:
+    st.session_state.last_results = None
+
+# --- STYLE CSS ---
 st.markdown("""
     <style>
     div.stButton > button:first-child {
-        background-color: #28a745;
-        color: white;
-        height: 3em;
-        width: 100%;
-        border-radius: 5px;
-        border: none;
-        font-weight: bold;
+        background-color: #28a745; color: white; height: 3em; width: 100%;
+        border-radius: 5px; border: none; font-weight: bold;
     }
-    .loading-text {
-        font-weight: bold;
-        font-size: 18px;
-        margin-bottom: 10px;
-    }
+    .loading-text { font-weight: bold; font-size: 18px; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -38,7 +35,6 @@ st.title("🏡 Haven Radar")
 # --- BARRE LATÉRALE ---
 with st.sidebar:
     st.header("Paramètres du Scan")
-    # Ajout de la détection automatique au changement (touche Entrée)
     commune_in = st.text_input("Secteur :", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
@@ -46,18 +42,18 @@ with st.sidebar:
     
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
+    if st.button("🔄 Réinitialiser tous les gris"):
+        st.session_state.hidden_havens = set()
+        st.rerun()
 
-# --- LOGIQUE DE DÉCLENCHEMENT (Simplifiée pour marcher avec Entrée) ---
+# --- LOGIQUE DE SCAN ---
 if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_in):
     if not commune_in:
         st.error("⚠️ Veuillez entrer le nom d'une commune.")
     else:
         components.html(js_close_sidebar, height=0, width=0)
-        
         try:
-            # Mémorisation de la ville pour éviter la boucle infinie
             st.session_state['last_city'] = commune_in
-            
             loading_container = st.container()
             with loading_container:
                 status_placeholder = st.empty()
@@ -78,10 +74,8 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
-                try:
-                    autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
-                except:
-                    autoroutes = pd.DataFrame()
+                try: autoroutes = ox.features_from_polygon(bbox, tags={'highway': 'motorway'})
+                except: autoroutes = pd.DataFrame()
                 
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 70%</p>', unsafe_allow_html=True)
                 progress_bar.progress(70)
@@ -104,35 +98,57 @@ if lancer_scan or (commune_in and st.session_state.get('last_city') != commune_i
                     coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
                     nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
                     adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                    
                     candidates['taille_hameau'] = adj.sum(axis=1)
-                    res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
-                    
-                    status_placeholder.empty()
-                    progress_bar.empty()
-                    loading_container.empty()
-
-                    if res.empty:
-                        st.warning("⚠️ Aucun résultat trouvé.")
-                    else:
-                        st.success(f"✅ {len(res)} Havens détectés !")
-                        m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
-                        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
-
-                        for i, (idx, row) in enumerate(res.iterrows()):
-                            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
-                            u_google = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-                            u_waze = f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
-                            u_sv = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
-                            pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><br><small>Hameau de {int(row['taille_hameau'])} bât.</small><hr><a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='{u_waze}' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a><a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a></div>"
-                            icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
-                            folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
-                        
-                        st_folium(m, width="100%", height=600, returned_objects=[])
-                        csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
-                        st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
-                else:
-                    loading_container.empty()
-                    st.warning("⚠️ Aucun bâtiment ne correspond aux critères.")
+                    st.session_state.last_results = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
+                
+                status_placeholder.empty()
+                progress_bar.empty()
+                loading_container.empty()
         except Exception as e:
             st.error(f"❌ Erreur : {str(e)}")
+
+# --- AFFICHAGE ET GESTION DES GRIS ---
+if st.session_state.last_results is not None:
+    res = st.session_state.last_results
+    if res.empty:
+        st.warning("⚠️ Aucun résultat trouvé.")
+    else:
+        st.success(f"✅ {len(res)} Havens détectés !")
+        
+        # Création de la carte
+        m = folium.Map(location=[res.geometry.centroid.y.mean(), res.geometry.centroid.x.mean()], zoom_start=13)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
+
+        for i, (idx, row) in enumerate(res.iterrows()):
+            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+            # Vérifier si l'ID est dans les gris
+            id_str = str(idx)
+            est_gris = id_str in st.session_state.hidden_havens
+            couleur = "#808080" if est_gris else "red"
+            
+            pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><br><small>Hameau de {int(row['taille_hameau'])} bât.</small><hr><a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a></div>"
+            icon_html = f'<div style="background-color:{couleur};border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
+            folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
+        
+        st_folium(m, width="100%", height=600, returned_objects=[])
+
+        # --- INTERFACE DE TRI (Sous la carte pour ne pas faire bugger Folium) ---
+        st.markdown("### 🛠️ Gestion du tri")
+        col_sel, col_btn = st.columns([2, 1])
+        
+        with col_sel:
+            # Liste déroulante pour choisir le bâtiment par son numéro
+            choix = st.selectbox("Sélectionner un Haven pour changer sa couleur :", 
+                                 range(len(res)), 
+                                 format_func=lambda x: f"Haven #{x+1}")
+            id_selectionne = str(res.index[choix])
+
+        with col_btn:
+            if id_selectionne in st.session_state.hidden_havens:
+                if st.button("🔴 Rétablir en Rouge", use_container_width=True):
+                    st.session_state.hidden_havens.remove(id_selectionne)
+                    st.rerun()
+            else:
+                if st.button("⚪ Griser la pastille", use_container_width=True):
+                    st.session_state.hidden_havens.add(id_selectionne)
+                    st.rerun()
