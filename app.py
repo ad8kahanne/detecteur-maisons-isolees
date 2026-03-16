@@ -26,7 +26,6 @@ st.markdown("""
     [data-testid="stSidebar"] {
         box-shadow: 2px 0px 10px rgba(0,0,0,0.2);
     }
-    /* Style pour le texte de progression */
     .loading-text {
         font-weight: bold;
         font-size: 18px;
@@ -49,7 +48,10 @@ with st.sidebar:
     commune_in = st.text_input("Secteur :", value="", placeholder="Tapez votre commune ici...", key="city_input")
     dist_route_val = st.slider("Distance Route (m) :", 30, 300, 70)
     rayon_iso_val = st.slider("Rayon Isolement (m) :", 50, 600, 180)
-    voisins_max_val = st.number_input("Voisins Max autorisés :", 0, 12, 2)
+    
+    # MODIFICATION : On demande la taille totale du hameau (minimum 1)
+    taille_hameau_max = st.number_input("Nombre de bâtiments du hameau :", 1, 13, 3)
+    
     st.markdown("---")
     lancer_scan = st.button("Lancer le Scan")
 
@@ -62,14 +64,11 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
         
         try:
             st.session_state['last_run'] = commune_in
-            
-            # --- INTERFACE DE CHARGEMENT ÉPURÉE ---
             loading_container = st.container()
             with loading_container:
                 status_placeholder = st.empty()
                 progress_bar = st.progress(0)
                 
-                # Étape 1 : 15%
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 15%</p>', unsafe_allow_html=True)
                 progress_bar.progress(15)
                 base = ox.geocode_to_gdf(commune_in)
@@ -79,7 +78,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 secteur = secteur[secteur.geometry.area < 200_000_000] 
                 union_zone = secteur.geometry.union_all()
                 
-                # Étape 2 : 40%
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 40%</p>', unsafe_allow_html=True)
                 progress_bar.progress(40)
                 bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
@@ -92,7 +90,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 except:
                     autoroutes = pd.DataFrame()
                 
-                # Étape 3 : 70%
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 70%</p>', unsafe_allow_html=True)
                 progress_bar.progress(70)
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
@@ -106,7 +103,6 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                 else:
                     candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
                 
-                # Étape 4 : 90%
                 status_placeholder.markdown('<p class="loading-text">🔍 Recherche en cours... 90%</p>', unsafe_allow_html=True)
                 progress_bar.progress(90)
                 
@@ -115,10 +111,11 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                     coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
                     nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
                     adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                    candidates['nb_voisins'] = adj.sum(axis=1) - 1
-                    res = candidates[candidates['nb_voisins'] <= voisins_max_val].copy().to_crs(epsg=4326)
                     
-                    # Nettoyage final du chargement
+                    # LOGIQUE CORRIGÉE : nb_voisins + 1 = Taille totale du hameau
+                    candidates['taille_hameau'] = adj.sum(axis=1)
+                    res = candidates[candidates['taille_hameau'] <= taille_hameau_max].copy().to_crs(epsg=4326)
+                    
                     status_placeholder.empty()
                     progress_bar.empty()
                     loading_container.empty()
@@ -135,12 +132,12 @@ if lancer_scan or (st.session_state.city_input and st.session_state.get('last_ru
                             u_google = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
                             u_waze = f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
                             u_sv = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
-                            pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><hr><a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='{u_waze}' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a><a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a></div>"
+                            pop_html = f"<div style='font-family:Arial; width:160px;'><b>HAVEN #{i+1}</b><br><small>Hameau de {int(row['taille_hameau'])} bât.</small><hr><a href='{u_google}' target='_blank' style='color:#4285F4;display:block;'>🗺️ Maps</a><a href='{u_waze}' target='_blank' style='color:#33CCFF;display:block;'>🚙 Waze</a><a href='{u_sv}' target='_blank' style='color:#EA4335;display:block;'>🏙️ Street View</a></div>"
                             icon_html = f'<div style="background-color:red;border:2px solid white;border-radius:50%;width:25px;height:25px;color:white;font-weight:bold;font-size:12px;display:flex;justify-content:center;align-items:center;">{i+1}</div>'
                             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=250), icon=folium.DivIcon(html=icon_html)).add_to(m)
                         
                         st_folium(m, width="100%", height=600, returned_objects=[])
-                        csv = res[['nb_voisins', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
+                        csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
                         st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
                 else:
                     loading_container.empty()
