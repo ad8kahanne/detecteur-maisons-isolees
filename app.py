@@ -78,39 +78,43 @@ with st.sidebar:
             st.rerun()
 
 # --- LOGIQUE DE SCAN ---
-# Vidage automatique si nouvelle commune
-if commune_in and commune_in != st.session_state.last_city:
-    st.session_state.favs = {}
-    st.session_state.last_res = None
-
-if lancer_scan or (commune_in and st.session_state.last_city != commune_in):
+if lancer_scan:
     if not commune_in:
         st.error("⚠️ Entrez une commune.")
     else:
+        # PURGE SI NOUVELLE COMMUNE (Déclenchée uniquement au clic sur le bouton)
+        if commune_in.strip().lower() != st.session_state.last_city.strip().lower():
+            st.session_state.favs = {}
+            st.session_state.sync_idx = 0
+            st.session_state.last_res = None
+            
         components.html(js_close_sidebar, height=0, width=0)
         try:
             st.session_state.last_city = commune_in
-            p_bar = st.progress(0, text="0%")
+            p_bar = st.progress(0, text="Chargement : 0%")
             
+            # Étape 25%
             base = ox.geocode_to_gdf(commune_in)
-            p_bar.progress(20, text="20%")
+            p_bar.progress(25, text="Chargement : 25%")
             
+            # Étape 50%
             geom_c = base.geometry.iloc[0]
             voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
             secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
             union_zone = secteur.geometry.union_all()
-            p_bar.progress(40, text="40%")
+            p_bar.progress(50, text="Chargement : 50%")
             
+            # Étape 75%
             bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
             bat = ox.features_from_polygon(bbox, tags={'building': True})
             routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
-            p_bar.progress(60, text="60%")
+            p_bar.progress(75, text="Chargement : 75%")
             
+            # Finalisation
             bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
             routes = routes.to_crs(epsg=2154)
             bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
             candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
-            p_bar.progress(80, text="80%")
             
             if not candidates.empty:
                 coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
@@ -121,7 +125,7 @@ if lancer_scan or (commune_in and st.session_state.last_city != commune_in):
                 st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
                 st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
             
-            p_bar.progress(100, text="100%")
+            p_bar.progress(100, text="Chargement : 100%")
             p_bar.empty()
         except Exception as e:
             st.error(f"❌ Erreur : {str(e)}")
