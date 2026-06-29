@@ -12,10 +12,10 @@ import time
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
-# Activation du cache d'OSMnx pour accélérer les scans répétés
+# Activation du cache d'OSMnx pour accélérer les scans répétés sans saturer le serveur
 ox.config(use_cache=True, cache_folder='./cache', log_console=False)
 
-# --- INITIALISATION ÉTATS ---
+# --- INITIALISATION ÉTATS (Strictement identiques à l'origine) ---
 if 'favs' not in st.session_state:
     st.session_state.favs = {} 
 if 'map_center' not in st.session_state:
@@ -96,44 +96,43 @@ if lancer_scan:
         try:
             st.session_state.last_city = commune_in
             
-            # Utilisation d'un conteneur de statut Streamlit pour englober la recherche
+            # Utilisation d'un conteneur de statut pour regrouper visuellement les étapes
             with st.status("Initialisation du Scan géomatique...", expanded=True) as status:
                 p_bar = st.progress(0, text="Connexion aux serveurs cartographiques...")
                 
-                # Étape 1 : Géocodage de la commune demandée
+                # Étape 1 : Géocodage de la commune
                 base = ox.geocode_to_gdf(commune_in)
                 
-                # Animation fluide de 0% à 25%
+                # Progression fluide simulée jusqu'à 25%
                 for percent in range(1, 26):
                     time.sleep(0.02)
                     p_bar.progress(percent, text=f"Localisation de la commune sur la carte : {percent}%")
                 
-                # Étape 2 : Récupération des limites géographiques et des communes voisines
+                # Étape 2 : Communes voisines
                 geom_c = base.geometry.iloc[0]
                 voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
                 union_zone = secteur.geometry.union_all()
                 
-                # Animation fluide de 25% à 50%
+                # Progression fluide simulée jusqu'à 50%
                 for percent in range(26, 51):
                     time.sleep(0.02)
                     p_bar.progress(percent, text=f"Calcul de la zone tampon et du secteur étendu : {percent}%")
                 
-                # Étape 3 : Téléchargement OpenStreetMap (Bâtiments + Routes)
+                # Étape 3 : Requête OpenStreetMap (C'est la partie lourde qui prend du temps)
                 bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
                 
-                # Message d'avertissement car c'est la ligne qui bloque
                 p_bar.progress(51, text="Téléchargement des bâtiments et routes OpenStreetMap (Patientez)...")
                 
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
-                # Animation rapide de 51% à 85% pour simuler la reprise après le téléchargement blockant
+                # Progression fluide simulée après le téléchargement bloquant
                 for percent in range(52, 86):
                     time.sleep(0.01)
                     p_bar.progress(percent, text=f"Filtrage des polygones et calcul des axes routiers : {percent}%")
                 
-                # Étape 4 : Calculs géospatiaux (Distances et Algorithme KNN pour l'isolement)
+                # Étape 4 : Calculs géospatiaux mathématiques (KNN & distances)
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
                 bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
@@ -148,10 +147,10 @@ if lancer_scan:
                     st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
                     st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
                 
-                # Fin de la progression de 85% à 100%
+                # Progression fluide simulée jusqu'à la fin
                 for percent in range(86, 101):
                     time.sleep(0.02)
-                    p_bar.progress(percent, text=f"Création de la carte interactive : {percent}%")
+                    p_bar.progress(percent, text=f"Génération de la carte interactive : {percent}%")
                 
                 p_bar.empty()
                 status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
