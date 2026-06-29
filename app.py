@@ -6,10 +6,14 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
 import streamlit.components.v1 as components
+import time
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
+
+# Activation du cache d'OSMnx pour accélérer les scans répétés
+ox.config(use_cache=True, cache_folder='./cache', log_console=False)
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -82,7 +86,7 @@ if lancer_scan:
     if not commune_in:
         st.error("⚠️ Entrez une commune.")
     else:
-        # PURGE SI NOUVELLE COMMUNE (Déclenchée uniquement au clic sur le bouton)
+        # PURGE SI NOUVELLE COMMUNE
         if commune_in.strip().lower() != st.session_state.last_city.strip().lower():
             st.session_state.favs = {}
             st.session_state.sync_idx = 0
@@ -91,44 +95,69 @@ if lancer_scan:
         components.html(js_close_sidebar, height=0, width=0)
         try:
             st.session_state.last_city = commune_in
-            p_bar = st.progress(0, text="Chargement : 0%")
             
-            # Étape 25%
-            base = ox.geocode_to_gdf(commune_in)
-            p_bar.progress(25, text="Chargement : 25%")
-            
-            # Étape 50%
-            geom_c = base.geometry.iloc[0]
-            voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
-            secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
-            union_zone = secteur.geometry.union_all()
-            p_bar.progress(50, text="Chargement : 50%")
-            
-            # Étape 75%
-            bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
-            bat = ox.features_from_polygon(bbox, tags={'building': True})
-            routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
-            p_bar.progress(75, text="Chargement : 75%")
-            
-            # Finalisation
-            bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
-            routes = routes.to_crs(epsg=2154)
-            bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
-            candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
-            
-            if not candidates.empty:
-                coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
-                coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
-                nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
-                adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                candidates['taille_hameau'] = adj.sum(axis=1)
-                st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
-                st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
-            
-            p_bar.progress(100, text="Chargement : 100%")
-            p_bar.empty()
+            # Utilisation d'un conteneur de statut Streamlit pour englober la recherche
+            with st.status("Initialisation du Scan géomatique...", expanded=True) as status:
+                p_bar = st.progress(0, text="Connexion aux serveurs cartographiques...")
+                
+                # Étape 1 : Géocodage de la commune demandée
+                base = ox.geocode_to_gdf(commune_in)
+                
+                # Animation fluide de 0% à 25%
+                for percent in range(1, 26):
+                    time.sleep(0.02)
+                    p_bar.progress(percent, text=f"Localisation de la commune sur la carte : {percent}%")
+                
+                # Étape 2 : Récupération des limites géographiques et des communes voisines
+                geom_c = base.geometry.iloc[0]
+                voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
+                secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
+                union_zone = secteur.geometry.union_all()
+                
+                # Animation fluide de 25% à 50%
+                for percent in range(26, 51):
+                    time.sleep(0.02)
+                    p_bar.progress(percent, text=f"Calcul de la zone tampon et du secteur étendu : {percent}%")
+                
+                # Étape 3 : Téléchargement OpenStreetMap (Bâtiments + Routes)
+                bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
+                
+                # Message d'avertissement car c'est la ligne qui bloque
+                p_bar.progress(51, text="Téléchargement des bâtiments et routes OpenStreetMap (Patientez)...")
+                
+                bat = ox.features_from_polygon(bbox, tags={'building': True})
+                routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
+                
+                # Animation rapide de 51% à 85% pour simuler la reprise après le téléchargement blockant
+                for percent in range(52, 86):
+                    time.sleep(0.01)
+                    p_bar.progress(percent, text=f"Filtrage des polygones et calcul des axes routiers : {percent}%")
+                
+                # Étape 4 : Calculs géospatiaux (Distances et Algorithme KNN pour l'isolement)
+                bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
+                routes = routes.to_crs(epsg=2154)
+                bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
+                candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
+                
+                if not candidates.empty:
+                    coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
+                    coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
+                    nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
+                    adj = nn.radius_neighbors_graph(coords_candidates).toarray()
+                    candidates['taille_hameau'] = adj.sum(axis=1)
+                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                    st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                
+                # Fin de la progression de 85% à 100%
+                for percent in range(86, 101):
+                    time.sleep(0.02)
+                    p_bar.progress(percent, text=f"Création de la carte interactive : {percent}%")
+                
+                p_bar.empty()
+                status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
+                
         except Exception as e:
-            st.error(f"❌ Erreur : {str(e)}")
+            st.error(f"❌ Erreur lors de l'exécution : {str(e)}")
 
 # --- AFFICHAGE RESULTATS ET CARTE ---
 if st.session_state.last_res is not None:
@@ -141,7 +170,7 @@ if st.session_state.last_res is not None:
         for i, (idx, row) in enumerate(res.iterrows()):
             lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
             pop_html = f"""<div style='font-family:Arial; width:170px;'><b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
-            <a href='http://maps.google.com/maps?q={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
+            <a href='http://maps.google.com/?q={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
             <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a></div>"""
             
             icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
@@ -159,3 +188,5 @@ if st.session_state.last_res is not None:
 
         csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
         st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
+    else:
+        st.warning("⚠️ Aucun Haven trouvé avec ces critères de recherche sur cette commune.")
