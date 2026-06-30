@@ -1,5 +1,6 @@
 import streamlit as st
 import osmnx as ox
+import geopandas as gpd
 import folium
 from streamlit_folium import st_folium
 import pandas as pd
@@ -121,8 +122,10 @@ if lancer_scan:
                     time.sleep(0.02)
                     p_bar.progress(percent, text=f"Calcul de la zone tampon et du secteur étendu : {percent}%")
                 
-                # Étape 3 : Requête OpenStreetMap (C'est la partie lourde qui prend du temps)
-                bbox = secteur.to_crs(epsg=4326).geometry.union_all().buffer(0.01) 
+                # Étape 3 : Requête OpenStreetMap
+                # Création d'un buffer précis de 1000m en métrique avant conversion en coordonnées 4326
+                bbox_m = secteur.geometry.union_all().buffer(1000)
+                bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
                 p_bar.progress(51, text="Téléchargement des bâtiments et routes OpenStreetMap (Patientez)...")
                 
@@ -137,7 +140,11 @@ if lancer_scan:
                 # Étape 4 : Calculs géospatiaux mathématiques (KNN & distances)
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
-                bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes.distance(x).min())
+                
+                # Optimisation de la vitesse de calcul des distances via l'union des lignes (C-level execution)
+                routes_union = routes.geometry.union_all()
+                bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
+                
                 candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
                 
                 if not candidates.empty:
@@ -170,8 +177,9 @@ if st.session_state.last_res is not None:
 
         for i, (idx, row) in enumerate(res.iterrows()):
             lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+            # Lien HTTPS officiel de l'API de recherche Google Maps
             pop_html = f"""<div style='font-family:Arial; width:170px;'><b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
-            <a href='http://maps.google.com/?q={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
+            <a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
             <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a></div>"""
             
             icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
