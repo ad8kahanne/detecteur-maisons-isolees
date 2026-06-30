@@ -123,7 +123,6 @@ if lancer_scan:
                     p_bar.progress(percent, text=f"Calcul de la zone tampon et du secteur étendu : {percent}%")
                 
                 # Étape 3 : Requête OpenStreetMap
-                # Création d'un buffer précis de 1000m en métrique avant conversion en coordonnées 4326
                 bbox_m = secteur.geometry.union_all().buffer(1000)
                 bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
@@ -141,7 +140,6 @@ if lancer_scan:
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
                 
-                # Optimisation de la vitesse de calcul des distances via l'union des lignes (C-level execution)
                 routes_union = routes.geometry.union_all()
                 bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
                 
@@ -172,18 +170,36 @@ if st.session_state.last_res is not None:
     res = st.session_state.last_res
     if not res.empty:
         st.success(f"✅ {len(res)} Havens détectés !")
-        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level)
-        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Satellite', max_zoom=22).add_to(m)
+        
+        # Initialisation de la carte sans fond par défaut (control_scale évite les conflits)
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level, tiles=None)
+        
+        # Ajout des deux couches de fond commutables (la première ajoutée sera celle par défaut)
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
+            attr='Google', 
+            name='Satellite', 
+            max_zoom=22,
+            overlay=False
+        ).add_to(m)
+        
+        folium.TileLayer(
+            'OpenStreetMap', 
+            name='Carte Standard',
+            overlay=False
+        ).add_to(m)
 
         for i, (idx, row) in enumerate(res.iterrows()):
             lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
-            # Lien HTTPS officiel de l'API de recherche Google Maps
             pop_html = f"""<div style='font-family:Arial; width:170px;'><b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
             <a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
             <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a></div>"""
             
             icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_c)).add_to(m)
+        
+        # Ajout du bouton de contrôle des couches en haut à droite de la carte
+        folium.LayerControl(position='topright', collapsed=False).add_to(m)
         
         map_data = st_folium(m, width="100%", height=700, key="main_map", returned_objects=["last_object_clicked"])
         
