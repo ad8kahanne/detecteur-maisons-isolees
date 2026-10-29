@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
 import streamlit.components.v1 as components
+import time
 
 # --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
@@ -15,9 +16,9 @@ st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-ox.settings.timeout = 300  # 5 minutes de délai pour éviter les coupures sur les grosses zones
+ox.settings.timeout = 300
 
-# Utilisation explicite du serveur officiel principal par défaut
+# Utilisation du serveur officiel principal
 ox.settings.overpass_url = "https://overpass-api.de/api/interpreter"
 
 # --- INITIALISATION ÉTATS ---
@@ -108,7 +109,7 @@ if lancer_scan:
                 base = ox.geocode_to_gdf(commune_in)
                 
                 p_bar.progress(35, text="2/4 - Intégration des communes voisines (périmètre élargi)...")
-                # Étape 2 : Communes voisines (garde toute la logique initiale)
+                # Étape 2 : Communes voisines
                 geom_c = base.geometry.iloc[0]
                 voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
@@ -146,7 +147,7 @@ if lancer_scan:
                 status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
                 
         except Exception as e:
-            st.error(f"❌ Erreur lors de l'exécution : {str(e)}")
+            st.error(f"❌ Erreur lors de l'exécution (la zone est probablement trop vaste pour le serveur public) : {str(e)}")
 
 # --- AFFICHAGE RESULTATS ET CARTE ---
 if st.session_state.last_res is not None:
