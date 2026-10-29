@@ -17,9 +17,6 @@ ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
 
-# CORRECTION RADICALE : On force l'URL exacte en réinitialisant l'objet endpoint d'OSMnx
-ox.settings.overpass_endpoint = "https://overpass-api.de/api/interpreter"
-
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
     st.session_state.favs = {} 
