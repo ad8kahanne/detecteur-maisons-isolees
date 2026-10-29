@@ -6,6 +6,9 @@ from streamlit_folium import st_folium
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
+import requests
+import json
+from shapely.geometry import shape
 
 # --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
@@ -14,8 +17,6 @@ st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api/interpreter"
-ox.settings.timeout = 300
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -81,6 +82,41 @@ with st.sidebar:
             st.session_state.favs = {}
             st.rerun()
 
+# --- FONCTION DE REQUÊTE DIRECTE SANS REDirection ALLEMANDE ---
+def fetch_overpass_direct(polygon_geom, tags):
+    # Conversion de la géométrie en polygone texte pour Overpass QL
+    coords = list(polygon_geom.exterior.coords)
+    poly_str = " ".join([f"{lat} {lon}" for lon, lat in coords])
+    
+    # Construction de la requête Overpass ciblée sur le miroir français uniquement
+    query = f"""
+    [out:json][timeout:180];
+    (
+      way(poly:"{poly_str}"){str(tags).replace("'", '"')};
+      relation(poly:"{poly_str}"){str(tags).replace("'", '"')};
+    );
+    out geom;
+    """
+    url = "https://overpass.openstreetmap.fr/api/interpreter"
+    response = requests.post(url, data={'data': query})
+    if response.status_code != 200:
+        raise Exception(f"Erreur serveur Overpass (Code {response.status_code})")
+    
+    data = response.json()
+    elements = data.get('elements', [])
+    
+    geometries = []
+    for el in elements:
+        if 'geometry' in el:
+            pts = [(pt['lon'], pt['lat']) for pt in el['geometry']]
+            if len(pts) >= 3:
+                from shapely.geometry import Polygon
+                geometries.append({'geometry': Polygon(pts), **el.get('tags', {})})
+    
+    if not geometries:
+        return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+    return gpd.GeoDataFrame(geometries, crs="EPSG:4326")
+
 # --- LOGIQUE DE SCAN ---
 if lancer_scan:
     if not commune_in:
@@ -94,36 +130,43 @@ if lancer_scan:
         try:
             st.session_state.last_city = commune_in
             
-            with st.status("Exécution du Scan géomatique...", expanded=True) as status:
-                p_bar = st.progress(20, text="1/2 - Téléchargement ciblé (Commune + marge de 200m)...")
+            with st.status("Exécution du Scan géomatique direct...", expanded=True) as status:
+                p_bar = st.progress(20, text="1/2 - Localisation de la commune...")
                 
-                # Géocodage et zone unique avec buffer propre
                 base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
                 union_zone = base.geometry.union_all()
                 bbox_m = union_zone.buffer(200)
-                bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
-                bat = ox.features_from_polygon(bbox, tags={'building': True})
-                routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
+                # Passage en WGS84 pour Overpass
+                bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
-                p_bar.progress(70, text="2/2 - Calculs géospatiaux (distances & isolation KNN)...")
+                p_bar.progress(50, text="2/2 - Téléchargement direct via le miroir français...")
                 
-                bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
-                routes = routes.to_crs(epsg=2154)
+                # Requêtes directes sécurisées
+                bat = fetch_overpass_direct(bbox_wgs84, {'building': True})
+                routes = fetch_overpass_direct(bbox_wgs84, {'highway': True})
                 
-                routes_union = routes.geometry.union_all()
-                bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
-                
-                candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
-                
-                if not candidates.empty:
-                    coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
-                    coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
-                    nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
-                    adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                    candidates['taille_hameau'] = adj.sum(axis=1)
-                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
-                    st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                if bat.empty or routes.empty:
+                    st.warning("⚠️ Aucune donnée récupérée sur cette zone.")
+                else:
+                    bat = bat.to_crs(epsg=2154)
+                    routes = routes.to_crs(epsg=2154)
+                    
+                    routes_union = routes.geometry.union_all()
+                    bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
+                    
+                    candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
+                    
+                    if not candidates.empty:
+                        coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
+                        coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
+                        nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
+                        adj = nn.radius_neighbors_graph(coords_candidates).toarray()
+                        candidates['taille_hameau'] = adj.sum(axis=1)
+                        st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                        st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                    else:
+                        st.session_state.last_res = gpd.GeoDataFrame()
                 
                 p_bar.progress(100, text="Terminé !")
                 p_bar.empty()
