@@ -13,12 +13,10 @@ import time
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
+# Utilisation du cache standard sans aucune modification d'URL parasite
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-
-# URL complète et explicite pour éviter toute troncature par OSMnx
-ox.settings.overpass_url = "https://overpass-api.de/api/interpreter"
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
