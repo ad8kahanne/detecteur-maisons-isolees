@@ -8,17 +8,14 @@ from sklearn.neighbors import NearestNeighbors
 import warnings
 import streamlit.components.v1 as components
 
-# --- CONFIGURATION & CACHE (Optimisé v2.0+) ---
+# --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-ox.settings.timeout = 180  # Maintien du timeout de sécurité
-
-# Correction de l'URL officielle du serveur OpenStreetMap France
-ox.settings.overpass_url = "https://overpass.openstreetmap.fr/api/interpreter"
+ox.settings.timeout = 300  # Timeout étendu à 5 minutes pour les grosses zones
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
