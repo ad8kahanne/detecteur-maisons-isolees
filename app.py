@@ -101,15 +101,14 @@ if lancer_scan:
                 union_zone = base.geometry.union_all()
                 bbox_m = union_zone.buffer(200)
                 
-                # Conversion de la zone en limites géographiques (BBOX WGS84)
+                # Conversion propre en polygone WGS84 pour la requête
                 bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
-                minx, miny, maxx, maxy = bbox_wgs84.bounds  # west, south, east, north
                 
-                p_bar.progress(50, text="2/2 - Téléchargement via OSMnx...")
+                p_bar.progress(50, text="2/2 - Téléchargement des données géographiques...")
                 
-                # Utilisation de features_from_bbox : (north, south, east, west)
-                bat = ox.features_from_bbox(maxy, miny, maxx, minx, tags={'building': True})
-                routes = ox.features_from_bbox(maxy, miny, maxx, minx, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
+                # Utilisation de features_from_polygon sans conflit de paramètres
+                bat = ox.features_from_polygon(bbox_wgs84, tags={'building': True})
+                routes = ox.features_from_polygon(bbox_wgs84, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
                 p_bar.progress(85, text="Calculs géospatiaux (distances & isolation KNN)...")
                 
