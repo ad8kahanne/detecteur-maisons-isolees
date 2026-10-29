@@ -154,4 +154,67 @@ if lancer_scan:
                     nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
                     adj = nn.radius_neighbors_graph(coords_candidates).toarray()
                     candidates['taille_hameau'] = adj.sum(axis=1)
-                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].
+                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                    st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                
+                # Progression fluide simulée jusqu'à la fin
+                for percent in range(86, 101):
+                    time.sleep(0.02)
+                    p_bar.progress(percent, text=f"Génération de la carte interactive : {percent}%")
+                
+                p_bar.empty()
+                status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
+                
+        except Exception as e:
+            st.error(f"❌ Erreur lors de l'exécution : {str(e)}")
+
+# --- AFFICHAGE RESULTATS ET CARTE ---
+if st.session_state.last_res is not None:
+    res = st.session_state.last_res
+    if not res.empty:
+        st.success(f"✅ {len(res)} Havens détectés !")
+        
+        # Initialisation de la carte sans fond par défaut (control_scale évite les conflits)
+        m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level, tiles=None)
+        
+        # Ajout des deux couches de fond commutables (la première ajoutée sera celle par défaut)
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
+            attr='Google', 
+            name='Satellite', 
+            max_zoom=22,
+            overlay=False
+        ).add_to(m)
+        
+        folium.TileLayer(
+            'OpenStreetMap', 
+            name='Carte Standard',
+            overlay=False
+        ).add_to(m)
+
+        for i, (idx, row) in enumerate(res.iterrows()):
+            lat, lon = row.geometry.centroid.y, row.geometry.centroid.x
+            pop_html = f"""<div style='font-family:Arial; width:170px;'><b>HAVEN #{i+1}</b><br><small>{int(row['taille_hameau'])} bât.</small><hr>
+            <a href='https://www.google.com/maps/search/?api=1&query={lat},{lon}' target='_blank'>🗺️ Google Maps</a><br>
+            <a href='https://waze.com/ul?ll={lat},{lon}&navigate=yes' target='_blank'>🚙 Waze</a></div>"""
+            
+            icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
+            folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_c)).add_to(m)
+        
+        # Ajout du bouton de contrôle des couches en haut à droite de la carte
+        folium.LayerControl(position='topright', collapsed=False).add_to(m)
+        
+        map_data = st_folium(m, width="100%", height=700, key="main_map", returned_objects=["last_object_clicked"])
+        
+        if map_data and map_data.get("last_object_clicked"):
+            c_lat, c_lon = map_data["last_object_clicked"]["lat"], map_data["last_object_clicked"]["lng"]
+            dists = res.geometry.centroid.apply(lambda p: ((p.y - c_lat)**2 + (p.x - c_lon)**2)**0.5)
+            new_idx = res.index.get_loc(dists.idxmin())
+            if st.session_state.sync_idx != new_idx:
+                st.session_state.sync_idx = new_idx
+                st.rerun()
+
+        csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
+        st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
+    else:
+        st.warning("⚠️ Aucun Haven trouvé avec ces critères de recherche sur cette commune.")
