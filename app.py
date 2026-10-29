@@ -14,8 +14,6 @@ st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api/interpreter"
-ox.settings.timeout = 300
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -95,44 +93,42 @@ if lancer_scan:
             st.session_state.last_city = commune_in
             
             with st.status("Exécution du Scan géomatique...", expanded=True) as status:
-                p_bar = st.progress(20, text="1/2 - Localisation de la commune...")
-                
+                st.write("1/2 - Localisation et préparation de la zone...")
                 base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
-                union_zone = base.geometry.union_all()
-                bbox_m = union_zone.buffer(200)
+                polygon_m = base.geometry.union_all()
                 
-                # Conversion propre en polygone WGS84 pour la requête
-                bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
+                # Marge de sécurité légère de 50m pour attraper les bords sans exploser la requête
+                polygon_buffered = polygon_m.buffer(50)
+                polygon_wgs84 = gpd.GeoSeries([polygon_buffered], crs=2154).to_crs(epsg=4326).iloc[0]
                 
-                p_bar.progress(50, text="2/2 - Téléchargement des données géographiques...")
+                st.write("2/2 - Téléchargement des bâtiments et des routes...")
+                bat = ox.features_from_polygon(polygon_wgs84, tags={'building': True})
+                routes = ox.features_from_polygon(polygon_wgs84, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk', 'service']})
                 
-                # Utilisation de features_from_polygon sans conflit de paramètres
-                bat = ox.features_from_polygon(bbox_wgs84, tags={'building': True})
-                routes = ox.features_from_polygon(bbox_wgs84, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
-                
-                p_bar.progress(85, text="Calculs géospatiaux (distances & isolation KNN)...")
-                
-                bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
-                routes = routes.to_crs(epsg=2154)
-                
-                routes_union = routes.geometry.union_all()
-                bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
-                
-                candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
-                
-                if not candidates.empty:
-                    coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
-                    coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
-                    nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
-                    adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                    candidates['taille_hameau'] = adj.sum(axis=1)
-                    st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
-                    st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
-                else:
+                if bat.empty:
+                    st.warning("⚠️ Aucun bâtiment trouvé dans cette zone.")
                     st.session_state.last_res = gpd.GeoDataFrame()
+                else:
+                    bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
+                    routes = routes.to_crs(epsg=2154)
+                    
+                    routes_union = routes.geometry.union_all()
+                    bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
+                    
+                    # Filtrage strict à l'intérieur de la commune d'origine
+                    candidates = bat[bat.geometry.centroid.within(polygon_m) & (bat['d_route'] >= dist_route_val)].copy()
+                    
+                    if not candidates.empty:
+                        coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
+                        coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
+                        nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
+                        adj = nn.radius_neighbors_graph(coords_candidates).toarray()
+                        candidates['taille_hameau'] = adj.sum(axis=1)
+                        st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                        st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                    else:
+                        st.session_state.last_res = gpd.GeoDataFrame()
                 
-                p_bar.progress(100, text="Terminé !")
-                p_bar.empty()
                 status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
                 
         except Exception as e:
@@ -184,4 +180,4 @@ if st.session_state.last_res is not None:
         csv = res[['taille_hameau', 'd_route']].assign(lat=res.geometry.centroid.y, lon=res.geometry.centroid.x).to_csv(index=False)
         st.download_button("📥 Télécharger CSV", csv, "haven_radar.csv", "text/csv")
     else:
-        st.warning("⚠️ Aucun Haven trouvé avec ces critères de recherche sur cette commune.")
+        st.warning("⚠️ Aucun Haven trouvé avec ces critères sur cette commune.")
