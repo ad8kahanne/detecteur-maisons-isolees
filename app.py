@@ -6,8 +6,6 @@ from streamlit_folium import st_folium
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
-import streamlit.components.v1 as components
-import time
 
 # --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
@@ -16,6 +14,8 @@ st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
+ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api/interpreter"
+ox.settings.timeout = 300
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -38,8 +38,6 @@ st.markdown("""
     .stProgress > div > div > div > div { background-color: #28a745; }
     </style>
 """, unsafe_allow_html=True)
-
-js_close_sidebar = "<script>parent.document.querySelector('button[kind=\"headerNoPadding\"]').click();</script>"
 
 st.title("🏡 Haven Radar")
 
@@ -88,39 +86,28 @@ if lancer_scan:
     if not commune_in:
         st.error("⚠️ Entrez une commune.")
     else:
-        # PURGE SI NOUVELLE COMMUNE
         if commune_in.strip().lower() != st.session_state.last_city.strip().lower():
             st.session_state.favs = {}
             st.session_state.sync_idx = 0
             st.session_state.last_res = None
             
-        components.html(js_close_sidebar, height=0, width=0)
         try:
             st.session_state.last_city = commune_in
             
             with st.status("Exécution du Scan géomatique...", expanded=True) as status:
-                p_bar = st.progress(10, text="1/4 - Localisation de la commune...")
+                p_bar = st.progress(20, text="1/2 - Téléchargement ciblé (Commune + marge de 200m)...")
                 
-                # Étape 1 : Géocodage de la commune
-                base = ox.geocode_to_gdf(commune_in)
-                
-                p_bar.progress(35, text="2/4 - Intégration des communes voisines (périmètre élargi)...")
-                # Étape 2 : Communes voisines
-                geom_c = base.geometry.iloc[0]
-                voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
-                secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
-                union_zone = secteur.geometry.union_all()
-                
-                p_bar.progress(60, text="3/4 - Téléchargement des bâtiments et des routes OpenStreetMap...")
-                # Étape 3 : Requête OpenStreetMap
-                bbox_m = secteur.geometry.union_all().buffer(1000)
+                # Géocodage et zone unique avec buffer propre
+                base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
+                union_zone = base.geometry.union_all()
+                bbox_m = union_zone.buffer(200)
                 bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
-                p_bar.progress(85, text="4/4 - Calculs géospatiaux (distances routes & isolation KNN)...")
-                # Étape 4 : Calculs mathématiques
+                p_bar.progress(70, text="2/2 - Calculs géospatiaux (distances & isolation KNN)...")
+                
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
                 
