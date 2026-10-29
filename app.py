@@ -77,7 +77,7 @@ with st.sidebar:
             st.session_state.favs = {}
             st.rerun()
 
-# --- FONCTION DE REQUÊTE DIRECTE SUR LE MIROIR FRANÇAIS ---
+# --- FONCTION DE REQUÊTE DIRECTE SÉCURISÉE ---
 def fetch_overpass_bbox(minx, miny, maxx, maxy, selector_tag):
     url = "https://overpass.openstreetmap.fr/api/interpreter"
     headers = {'User-Agent': 'HavenRadar/1.0'}
@@ -106,7 +106,10 @@ def fetch_overpass_bbox(minx, miny, maxx, maxy, selector_tag):
                 
     if not geometries:
         return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
-    return gpd.GeoDataFrame(geometries, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame(geometries, crs="EPSG:4326")
+    # Nettoyage automatique des géométries invalides pour éviter les TopologyException
+    gdf['geometry'] = gdf['geometry'].buffer(0)
+    return gdf[gdf['geometry'].is_valid & ~gdf['geometry'].is_empty]
 
 # --- LOGIQUE DE SCAN ---
 if lancer_scan:
@@ -124,13 +127,13 @@ if lancer_scan:
             with st.status("Exécution du Scan...", expanded=True) as status:
                 st.write("1/2 - Localisation de la commune...")
                 base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
-                union_zone = base.geometry.union_all()
+                union_zone = base.geometry.union_all().buffer(0) # Nettoyage topologique de la commune
                 bbox_m = union_zone.buffer(200)
                 
                 bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 minx, miny, maxx, maxy = bbox_wgs84.bounds
                 
-                st.write("2/2 - Téléchargement direct (Miroir Français)...")
+                st.write("2/2 - Téléchargement direct et nettoyage des géométries...")
                 bat = fetch_overpass_bbox(minx, miny, maxx, maxy, 'building')
                 routes = fetch_overpass_bbox(minx, miny, maxx, maxy, 'highway')
                 
