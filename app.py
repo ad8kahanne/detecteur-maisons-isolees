@@ -7,8 +7,7 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
 import requests
-import json
-from shapely.geometry import shape
+from shapely.geometry import Polygon
 
 # --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
@@ -82,13 +81,11 @@ with st.sidebar:
             st.session_state.favs = {}
             st.rerun()
 
-# --- FONCTION DE REQUÊTE DIRECTE SANS REDirection ALLEMANDE ---
+# --- FONCTION DE REQUÊTE DIRECTE SÉCURISÉE ---
 def fetch_overpass_direct(polygon_geom, tags):
-    # Conversion de la géométrie en polygone texte pour Overpass QL
     coords = list(polygon_geom.exterior.coords)
     poly_str = " ".join([f"{lat} {lon}" for lon, lat in coords])
     
-    # Construction de la requête Overpass ciblée sur le miroir français uniquement
     query = f"""
     [out:json][timeout:180];
     (
@@ -98,7 +95,9 @@ def fetch_overpass_direct(polygon_geom, tags):
     out geom;
     """
     url = "https://overpass.openstreetmap.fr/api/interpreter"
-    response = requests.post(url, data={'data': query})
+    headers = {'User-Agent': 'HavenRadar/1.0 (Geospatial Analysis Tool)'}
+    
+    response = requests.post(url, data={'data': query}, headers=headers)
     if response.status_code != 200:
         raise Exception(f"Erreur serveur Overpass (Code {response.status_code})")
     
@@ -110,7 +109,6 @@ def fetch_overpass_direct(polygon_geom, tags):
         if 'geometry' in el:
             pts = [(pt['lon'], pt['lat']) for pt in el['geometry']]
             if len(pts) >= 3:
-                from shapely.geometry import Polygon
                 geometries.append({'geometry': Polygon(pts), **el.get('tags', {})})
     
     if not geometries:
@@ -137,12 +135,10 @@ if lancer_scan:
                 union_zone = base.geometry.union_all()
                 bbox_m = union_zone.buffer(200)
                 
-                # Passage en WGS84 pour Overpass
                 bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
                 p_bar.progress(50, text="2/2 - Téléchargement direct via le miroir français...")
                 
-                # Requêtes directes sécurisées
                 bat = fetch_overpass_direct(bbox_wgs84, {'building': True})
                 routes = fetch_overpass_direct(bbox_wgs84, {'highway': True})
                 
