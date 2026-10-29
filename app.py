@@ -17,8 +17,8 @@ ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
 ox.settings.timeout = 180  # Maintien du timeout de sécurité
 
-# Utilisation du serveur officiel OpenStreetMap France (recommandé pour les données françaises)
-ox.settings.overpass_url = "https://api.openstreetmap.fr/oapi/interpreter"
+# Correction de l'URL officielle du serveur OpenStreetMap France
+ox.settings.overpass_url = "https://overpass.openstreetmap.fr/api/interpreter"
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
