@@ -13,6 +13,10 @@ from shapely.geometry import Polygon, LineString
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
+# Configuration d'OSMnx pour utiliser le miroir français (évite les refus de connexion)
+ox.settings.overpass_url = "https://overpass.openstreetmap.fr/api/interpreter"
+ox.settings.timeout = 180
+
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
     st.session_state.favs = {} 
@@ -98,7 +102,7 @@ if lancer_scan:
                 
                 bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
-                st.write("2/2 - Téléchargement et traitement des données (OSMnx)...")
+                st.write("2/2 - Téléchargement et traitement des données (OSMnx sur miroir français)...")
                 bat_raw = ox.features_from_polygon(bbox_wgs84, tags={'building': True})
                 routes_raw = ox.features_from_polygon(bbox_wgs84, tags={'highway': True})
                 
