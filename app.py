@@ -6,14 +6,12 @@ from streamlit_folium import st_folium
 import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 import warnings
+import requests
+from shapely.geometry import Polygon, LineString
 
-# --- CONFIGURATION & CACHE ---
+# --- CONFIGURATION ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
-
-ox.settings.use_cache = True
-ox.settings.cache_folder = './cache'
-ox.settings.log_console = False
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -79,6 +77,37 @@ with st.sidebar:
             st.session_state.favs = {}
             st.rerun()
 
+# --- FONCTION DE REQUÊTE DIRECTE SUR LE MIROIR FRANÇAIS ---
+def fetch_overpass_bbox(minx, miny, maxx, maxy, selector_tag):
+    url = "https://overpass.openstreetmap.fr/api/interpreter"
+    headers = {'User-Agent': 'HavenRadar/1.0'}
+    
+    query = f"""
+    [out:json][timeout:180];
+    (
+      way[{selector_tag}]({miny},{minx},{maxy},{maxx});
+      relation[{selector_tag}]({miny},{minx},{maxy},{maxx});
+    );
+    out geom;
+    """
+    response = requests.post(url, data={'data': query}, headers=headers, timeout=180)
+    if response.status_code != 200:
+        raise Exception(f"Erreur serveur Overpass France (Code {response.status_code})")
+    
+    data = response.json()
+    geometries = []
+    for el in data.get('elements', []):
+        if 'geometry' in el:
+            pts = [(pt['lon'], pt['lat']) for pt in el['geometry']]
+            if len(pts) >= 3:
+                geometries.append({'geometry': Polygon(pts), **el.get('tags', {})})
+            elif len(pts) == 2 and selector_tag == 'highway':
+                geometries.append({'geometry': LineString(pts), **el.get('tags', {})})
+                
+    if not geometries:
+        return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
+    return gpd.GeoDataFrame(geometries, crs="EPSG:4326")
+
 # --- LOGIQUE DE SCAN ---
 if lancer_scan:
     if not commune_in:
@@ -92,31 +121,29 @@ if lancer_scan:
         try:
             st.session_state.last_city = commune_in
             
-            with st.status("Exécution du Scan géomatique...", expanded=True) as status:
-                st.write("1/2 - Localisation et préparation de la zone...")
+            with st.status("Exécution du Scan...", expanded=True) as status:
+                st.write("1/2 - Localisation de la commune...")
                 base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
-                polygon_m = base.geometry.union_all()
+                union_zone = base.geometry.union_all()
+                bbox_m = union_zone.buffer(200)
                 
-                # Marge de sécurité légère de 50m pour attraper les bords sans exploser la requête
-                polygon_buffered = polygon_m.buffer(50)
-                polygon_wgs84 = gpd.GeoSeries([polygon_buffered], crs=2154).to_crs(epsg=4326).iloc[0]
+                bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
+                minx, miny, maxx, maxy = bbox_wgs84.bounds
                 
-                st.write("2/2 - Téléchargement des bâtiments et des routes...")
-                bat = ox.features_from_polygon(polygon_wgs84, tags={'building': True})
-                routes = ox.features_from_polygon(polygon_wgs84, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk', 'service']})
+                st.write("2/2 - Téléchargement direct (Miroir Français)...")
+                bat = fetch_overpass_bbox(minx, miny, maxx, maxy, 'building')
+                routes = fetch_overpass_bbox(minx, miny, maxx, maxy, 'highway')
                 
-                if bat.empty:
-                    st.warning("⚠️ Aucun bâtiment trouvé dans cette zone.")
+                if bat.empty or routes.empty:
                     st.session_state.last_res = gpd.GeoDataFrame()
                 else:
-                    bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
+                    bat = bat.to_crs(epsg=2154)
                     routes = routes.to_crs(epsg=2154)
                     
                     routes_union = routes.geometry.union_all()
                     bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
                     
-                    # Filtrage strict à l'intérieur de la commune d'origine
-                    candidates = bat[bat.geometry.centroid.within(polygon_m) & (bat['d_route'] >= dist_route_val)].copy()
+                    candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
                     
                     if not candidates.empty:
                         coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
