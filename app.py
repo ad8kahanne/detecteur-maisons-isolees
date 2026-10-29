@@ -9,14 +9,17 @@ import warnings
 import streamlit.components.v1 as components
 import time
 
-# --- CONFIGURATION & CACHE (Mis à jour pour OSMnx v2.0+) ---
+# --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
-# Nouvelle méthode officielle pour configurer le cache sans casser l'application
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
+ox.settings.timeout = 300
+
+# URL de base propre (OSMnx ajoute automatiquement /api/interpreter, évitant la duplication)
+ox.settings.overpass_url = "https://overpass-api.de"
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -99,44 +102,29 @@ if lancer_scan:
         try:
             st.session_state.last_city = commune_in
             
-            # Utilisation d'un conteneur de statut pour regrouper visuellement les étapes
-            with st.status("Initialisation du Scan géomatique...", expanded=True) as status:
-                p_bar = st.progress(0, text="Connexion aux serveurs cartographiques...")
+            with st.status("Exécution du Scan géomatique...", expanded=True) as status:
+                p_bar = st.progress(10, text="1/4 - Localisation de la commune...")
                 
                 # Étape 1 : Géocodage de la commune
                 base = ox.geocode_to_gdf(commune_in)
                 
-                # Progression fluide simulée jusqu'à 25%
-                for percent in range(1, 26):
-                    time.sleep(0.02)
-                    p_bar.progress(percent, text=f"Localisation de la commune sur la carte : {percent}%")
-                
+                p_bar.progress(35, text="2/4 - Intégration des communes voisines (périmètre élargi)...")
                 # Étape 2 : Communes voisines
                 geom_c = base.geometry.iloc[0]
                 voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
                 union_zone = secteur.geometry.union_all()
                 
-                # Progression fluide simulée jusqu'à 50%
-                for percent in range(26, 51):
-                    time.sleep(0.02)
-                    p_bar.progress(percent, text=f"Calcul de la zone tampon et du secteur étendu : {percent}%")
-                
+                p_bar.progress(60, text="3/4 - Téléchargement des bâtiments et des routes OpenStreetMap...")
                 # Étape 3 : Requête OpenStreetMap
                 bbox_m = secteur.geometry.union_all().buffer(1000)
                 bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
-                p_bar.progress(51, text="Téléchargement des bâtiments et routes OpenStreetMap (Patientez)...")
-                
                 bat = ox.features_from_polygon(bbox, tags={'building': True})
                 routes = ox.features_from_polygon(bbox, tags={'highway': ['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'trunk']})
                 
-                # Progression fluide simulée après le téléchargement bloquant
-                for percent in range(52, 86):
-                    time.sleep(0.01)
-                    p_bar.progress(percent, text=f"Filtrage des polygones et calcul des axes routiers : {percent}%")
-                
-                # Étape 4 : Calculs géospatiaux mathématiques (KNN & distances)
+                p_bar.progress(85, text="4/4 - Calculs géospatiaux (distances routes & isolation KNN)...")
+                # Étape 4 : Calculs mathématiques
                 bat = bat[bat.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy().to_crs(epsg=2154)
                 routes = routes.to_crs(epsg=2154)
                 
@@ -154,11 +142,7 @@ if lancer_scan:
                     st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
                     st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
                 
-                # Progression fluide simulée jusqu'à la fin
-                for percent in range(86, 101):
-                    time.sleep(0.02)
-                    p_bar.progress(percent, text=f"Génération de la carte interactive : {percent}%")
-                
+                p_bar.progress(100, text="Terminé !")
                 p_bar.empty()
                 status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
                 
@@ -171,10 +155,8 @@ if st.session_state.last_res is not None:
     if not res.empty:
         st.success(f"✅ {len(res)} Havens détectés !")
         
-        # Initialisation de la carte sans fond par défaut (control_scale évite les conflits)
         m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.zoom_level, tiles=None)
         
-        # Ajout des deux couches de fond commutables (la première ajoutée sera celle par défaut)
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 
             attr='Google', 
@@ -198,7 +180,6 @@ if st.session_state.last_res is not None:
             icon_c = f'<div style="background-color:red; border:2px solid white; border-radius:50%; width:22px; height:22px; color:white; font-weight:bold; font-size:10px; display:flex; justify-content:center; align-items:center;">{i+1}</div>'
             folium.Marker([lat, lon], popup=folium.Popup(pop_html, max_width=200), icon=folium.DivIcon(html=icon_c)).add_to(m)
         
-        # Ajout du bouton de contrôle des couches en haut à droite de la carte
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
         
         map_data = st_folium(m, width="100%", height=700, key="main_map", returned_objects=["last_object_clicked"])
