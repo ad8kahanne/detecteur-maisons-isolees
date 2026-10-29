@@ -15,10 +15,10 @@ st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
-ox.settings.timeout = 180  # Évite les déconnexions sur les grosses communes
+ox.settings.timeout = 180  # Maintien du timeout de sécurité
 
-# Serveur Overpass alternatif haute performance pour éviter les saturations
-ox.settings.overpass_url = "https://overpass.kumi.systems/api/interpreter"
+# Utilisation du serveur officiel OpenStreetMap France (recommandé pour les données françaises)
+ox.settings.overpass_url = "https://api.openstreetmap.fr/oapi/interpreter"
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
@@ -108,14 +108,14 @@ if lancer_scan:
                 base = ox.geocode_to_gdf(commune_in)
                 
                 p_bar.progress(35, text="2/4 - Intégration des communes voisines (périmètre élargi)...")
-                # Étape 2 : Communes voisines (Garde toute la subtilité des frontières)
+                # Étape 2 : Communes voisines
                 geom_c = base.geometry.iloc[0]
                 voisines = ox.features_from_polygon(geom_c.buffer(0.015), tags={'admin_level': '8'})
                 secteur = pd.concat([base, voisines[voisines.geometry.intersects(geom_c)]]).to_crs(epsg=2154)
                 union_zone = secteur.geometry.union_all()
                 
                 p_bar.progress(60, text="3/4 - Téléchargement des bâtiments et des routes OpenStreetMap...")
-                # Étape 3 : Requête OpenStreetMap optimisée
+                # Étape 3 : Requête OpenStreetMap
                 bbox_m = secteur.geometry.union_all().buffer(1000)
                 bbox = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
                 
