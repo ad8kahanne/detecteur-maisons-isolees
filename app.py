@@ -9,14 +9,16 @@ import warnings
 import streamlit.components.v1 as components
 import time
 
-# --- CONFIGURATION & CACHE (Mis à jour pour OSMnx v2.0+) ---
+# --- CONFIGURATION & CACHE ---
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title="HAVEN RADAR", layout="wide")
 
-# Nouvelle méthode officielle pour configurer le cache sans casser l'application
 ox.settings.use_cache = True
 ox.settings.cache_folder = './cache'
 ox.settings.log_console = False
+
+# URL complète et explicite pour éviter toute troncature par OSMnx
+ox.settings.overpass_url = "https://overpass-api.de/api/interpreter"
 
 # --- INITIALISATION ÉTATS ---
 if 'favs' not in st.session_state:
