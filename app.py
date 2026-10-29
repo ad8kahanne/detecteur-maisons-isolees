@@ -4,9 +4,9 @@ import geopandas as gpd
 import folium
 from streamlit_folium import st_folium
 import pandas as pd
+import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import warnings
-import requests
 from shapely.geometry import Polygon, LineString
 
 # --- CONFIGURATION ---
@@ -77,41 +77,7 @@ with st.sidebar:
             st.session_state.favs = {}
             st.rerun()
 
-# --- FONCTION DE REQUÊTE DIRECTE SÉCURISÉE ---
-def fetch_overpass_bbox(minx, miny, maxx, maxy, selector_tag):
-    url = "https://overpass.openstreetmap.fr/api/interpreter"
-    headers = {'User-Agent': 'HavenRadar/1.0'}
-    
-    query = f"""
-    [out:json][timeout:180];
-    (
-      way[{selector_tag}]({miny},{minx},{maxy},{maxx});
-      relation[{selector_tag}]({miny},{minx},{maxy},{maxx});
-    );
-    out geom;
-    """
-    response = requests.post(url, data={'data': query}, headers=headers, timeout=180)
-    if response.status_code != 200:
-        raise Exception(f"Erreur serveur Overpass France (Code {response.status_code})")
-    
-    data = response.json()
-    geometries = []
-    for el in data.get('elements', []):
-        if 'geometry' in el:
-            pts = [(pt['lon'], pt['lat']) for pt in el['geometry']]
-            if len(pts) >= 3:
-                geometries.append({'geometry': Polygon(pts), **el.get('tags', {})})
-            elif len(pts) == 2 and selector_tag == 'highway':
-                geometries.append({'geometry': LineString(pts), **el.get('tags', {})})
-                
-    if not geometries:
-        return gpd.GeoDataFrame(columns=['geometry'], crs="EPSG:4326")
-    gdf = gpd.GeoDataFrame(geometries, crs="EPSG:4326")
-    # Nettoyage automatique des géométries invalides pour éviter les TopologyException
-    gdf['geometry'] = gdf['geometry'].buffer(0)
-    return gdf[gdf['geometry'].is_valid & ~gdf['geometry'].is_empty]
-
-# --- LOGIQUE DE SCAN ---
+# --- LOGIQUE DE SCAN OPTIMISÉE ---
 if lancer_scan:
     if not commune_in:
         st.error("⚠️ Entrez une commune.")
@@ -127,37 +93,50 @@ if lancer_scan:
             with st.status("Exécution du Scan...", expanded=True) as status:
                 st.write("1/2 - Localisation de la commune...")
                 base = ox.geocode_to_gdf(commune_in).to_crs(epsg=2154)
-                union_zone = base.geometry.union_all().buffer(0) # Nettoyage topologique de la commune
+                union_zone = base.geometry.union_all()
                 bbox_m = union_zone.buffer(200)
                 
                 bbox_wgs84 = gpd.GeoSeries([bbox_m], crs=2154).to_crs(epsg=4326).iloc[0]
-                minx, miny, maxx, maxy = bbox_wgs84.bounds
                 
-                st.write("2/2 - Téléchargement direct et nettoyage des géométries...")
-                bat = fetch_overpass_bbox(minx, miny, maxx, maxy, 'building')
-                routes = fetch_overpass_bbox(minx, miny, maxx, maxy, 'highway')
+                st.write("2/2 - Téléchargement et traitement des données (OSMnx)...")
+                bat_raw = ox.features_from_polygon(bbox_wgs84, tags={'building': True})
+                routes_raw = ox.features_from_polygon(bbox_wgs84, tags={'highway': True})
                 
-                if bat.empty or routes.empty:
+                if bat_raw.empty or routes_raw.empty:
                     st.session_state.last_res = gpd.GeoDataFrame()
                 else:
-                    bat = bat.to_crs(epsg=2154)
-                    routes = routes.to_crs(epsg=2154)
+                    bat = bat_raw[bat_raw.geometry.type.isin(['Polygon', 'MultiPolygon'])].copy()
+                    routes = routes_raw[routes_raw.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
                     
-                    routes_union = routes.geometry.union_all()
-                    bat['d_route'] = bat.geometry.centroid.apply(lambda x: routes_union.distance(x))
-                    
-                    candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
-                    
-                    if not candidates.empty:
-                        coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
-                        coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
-                        nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
-                        adj = nn.radius_neighbors_graph(coords_candidates).toarray()
-                        candidates['taille_hameau'] = adj.sum(axis=1)
-                        st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
-                        st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
-                    else:
+                    if bat.empty or routes.empty:
                         st.session_state.last_res = gpd.GeoDataFrame()
+                    else:
+                        bat = bat.to_crs(epsg=2154)
+                        routes = routes.to_crs(epsg=2154)
+                        
+                        bat['geometry'] = bat['geometry'].buffer(0)
+                        routes['geometry'] = routes['geometry'].buffer(0)
+                        
+                        # Calcul vectorisé de la distance aux routes
+                        centroids_gdf = gpd.GeoDataFrame(geometry=bat.geometry.centroid, crs=bat.crs)
+                        nearest = gpd.sjoin_nearest(centroids_gdf, routes, how="left", distance_col="d_route")
+                        bat['d_route'] = nearest.groupby(nearest.index)['d_route'].min()
+                        
+                        candidates = bat[bat.geometry.centroid.within(union_zone) & (bat['d_route'] >= dist_route_val)].copy()
+                        
+                        if not candidates.empty:
+                            coords_toutes = list(zip(bat.geometry.centroid.x, bat.geometry.centroid.y))
+                            coords_candidates = list(zip(candidates.geometry.centroid.x, candidates.geometry.centroid.y))
+                            
+                            # Utilisation d'un graphe creux pour préserver la RAM
+                            nn = NearestNeighbors(radius=rayon_iso_val).fit(coords_toutes)
+                            adj = nn.radius_neighbors_graph(coords_candidates, mode='connectivity')
+                            candidates['taille_hameau'] = np.array(adj.sum(axis=1)).flatten()
+                            
+                            st.session_state.last_res = candidates[candidates['taille_hameau'] <= (taille_hameau_max + 1)].copy().to_crs(epsg=4326)
+                            st.session_state.map_center = [st.session_state.last_res.geometry.centroid.y.mean(), st.session_state.last_res.geometry.centroid.x.mean()]
+                        else:
+                            st.session_state.last_res = gpd.GeoDataFrame()
                 
                 status.update(label="Scan terminé avec succès !", state="complete", expanded=False)
                 
